@@ -1,0 +1,24 @@
+# Default static configuration manifest for 8_support_agent
+environment: development
+logging:
+  level: INFO
+  format: json
+
+agent:
+  max_iterations: 3
+  confidence_threshold: 0.85
+  recursion_limit: 5
+
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  temperature: 0.1
+  max_retries: 3
+
+persistence:
+  cache_ttl_seconds: 900
+  redis_url: redis://localhost:6379/0
+  postgres_dsn: postgresql://support_user:support_pass@localhost:5432/support_agent_db
+
+erp:
+  data_path: data/mock_orders.json

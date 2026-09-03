@@ -1,0 +1,105 @@
+[tool.poetry]
+name = "support-agent"
+version = "0.1.0"
+description = "Autonomous Tier-1 customer support automation agent with deterministic business rules and MCP runtime"
+authors = ["Michael <michael@example.com>"]
+readme = "README.md"
+packages = [
+    {include = "api", from = "src"},
+    {include = "agent", from = "src"},
+    {include = "clients", from = "src"},
+    {include = "core", from = "src"},
+    {include = "domain", from = "src"},
+    {include = "models", from = "src"},
+    {include = "observability", from = "src"},
+    {include = "persistence", from = "src"},
+    {include = "security", from = "src"},
+    {include = "tools", from = "src"},
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.110.0"
+uvicorn = {extras = ["standard"], version = "^0.28.0"}
+pydantic = "^2.6.4"
+pydantic-settings = "^2.2.1"
+email-validator = "^2.1.1"
+openai = "^1.14.0"
+httpx = "^0.28.0"
+structlog = "^24.1.0"
+python-dotenv = "^1.0.1"
+tenacity = "^8.2.3"
+typer = "^0.12.0"
+rich = "^13.7.1"
+redis = {version = "^5.0.3", optional = true}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.1"
+pytest-cov = "^4.1.0"
+pytest-asyncio = "^0.23.5"
+ruff = "^0.3.3"
+mypy = "^1.9.0"
+pre-commit = "^3.6.2"
+detect-secrets = "^1.4.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501", "UP017", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "agent",
+    "api",
+    "clients",
+    "core",
+    "domain",
+    "models",
+    "observability",
+    "persistence",
+    "security",
+    "tools",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unused_configs = true
+disallow_untyped_decorators = false
+ignore_missing_imports = true
+exclude = [
+    '^tests/fixtures/',
+    '^data/',
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
+addopts = "--cov=src --cov-report=term-missing --cov-report=xml"
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80

@@ -1,0 +1,136 @@
+{
+  "orders": [
+    {
+      "order_id": "CMD-10001",
+      "customer_email": "alice@example.com",
+      "status": "DELIVERED",
+      "carrier": "Colissimo",
+      "tracking_number": "COL-FR-10001-OK",
+      "ordered_at": "2026-08-20T10:00:00Z",
+      "shipped_at": "2026-08-21T14:30:00Z",
+      "estimated_delivery": "2026-08-24T18:00:00Z",
+      "actual_delivery": "2026-08-24T15:12:00Z",
+      "items_total_ttc_cents": 8990,
+      "shipping_fee_ttc_cents": 490,
+      "is_express": false,
+      "items": [
+        {
+          "sku": "SKU-HEADPHONES-01",
+          "name": "Wireless Noise Cancelling Headphones",
+          "quantity": 1,
+          "price_cents": 8990
+        }
+      ]
+    },
+    {
+      "order_id": "CMD-10002",
+      "customer_email": "bob@example.com",
+      "status": "DELAYED",
+      "carrier": "Chronopost Express",
+      "tracking_number": "CHR-EXP-10002-DL",
+      "ordered_at": "2026-08-15T08:00:00Z",
+      "shipped_at": "2026-08-15T12:00:00Z",
+      "estimated_delivery": "2026-08-17T12:00:00Z",
+      "actual_delivery": null,
+      "items_total_ttc_cents": 14900,
+      "shipping_fee_ttc_cents": 1200,
+      "is_express": true,
+      "items": [
+        {
+          "sku": "SKU-MONITOR-02",
+          "name": "27-inch 4K HDR Monitor",
+          "quantity": 1,
+          "price_cents": 14900
+        }
+      ]
+    },
+    {
+      "order_id": "CMD-10003",
+      "customer_email": "charlie@example.com",
+      "status": "DELIVERED",
+      "carrier": "DHL Standard",
+      "tracking_number": "DHL-STD-10003-EX",
+      "ordered_at": "2026-07-10T09:00:00Z",
+      "shipped_at": "2026-07-11T10:00:00Z",
+      "estimated_delivery": "2026-07-14T18:00:00Z",
+      "actual_delivery": "2026-07-14T11:45:00Z",
+      "items_total_ttc_cents": 5900,
+      "shipping_fee_ttc_cents": 500,
+      "is_express": false,
+      "items": [
+        {
+          "sku": "SKU-KEYBOARD-03",
+          "name": "Mechanical Gaming Keyboard",
+          "quantity": 1,
+          "price_cents": 5900
+        }
+      ]
+    },
+    {
+      "order_id": "CMD-10004",
+      "customer_email": "diana@example.com",
+      "status": "IN_TRANSIT",
+      "carrier": "Colissimo",
+      "tracking_number": "COL-FR-10004-TR",
+      "ordered_at": "2026-09-01T14:00:00Z",
+      "shipped_at": "2026-09-02T09:00:00Z",
+      "estimated_delivery": "2026-09-05T18:00:00Z",
+      "actual_delivery": null,
+      "items_total_ttc_cents": 3450,
+      "shipping_fee_ttc_cents": 490,
+      "is_express": false,
+      "items": [
+        {
+          "sku": "SKU-MOUSEPAD-04",
+          "name": "Extended Desk Mat",
+          "quantity": 1,
+          "price_cents": 3450
+        }
+      ]
+    },
+    {
+      "order_id": "CMD-10005",
+      "customer_email": "eve@example.com",
+      "status": "CANCELLED",
+      "carrier": "Colissimo",
+      "tracking_number": null,
+      "ordered_at": "2026-08-28T16:00:00Z",
+      "shipped_at": null,
+      "estimated_delivery": "2026-09-02T18:00:00Z",
+      "actual_delivery": null,
+      "items_total_ttc_cents": 7990,
+      "shipping_fee_ttc_cents": 490,
+      "is_express": false,
+      "items": [
+        {
+          "sku": "SKU-WEBCAM-05",
+          "name": "1080p HD Streaming Webcam",
+          "quantity": 1,
+          "price_cents": 7990
+        }
+      ]
+    },
+    {
+      "order_id": "CMD-10006",
+      "customer_email": "frank@example.com",
+      "status": "RETURNED",
+      "carrier": "Chronopost",
+      "tracking_number": "CHR-RET-10006-RT",
+      "ordered_at": "2026-08-01T11:00:00Z",
+      "shipped_at": "2026-08-02T08:00:00Z",
+      "estimated_delivery": "2026-08-04T18:00:00Z",
+      "actual_delivery": "2026-08-04T14:00:00Z",
+      "items_total_ttc_cents": 11990,
+      "shipping_fee_ttc_cents": 690,
+      "is_express": false,
+      "items": [
+        {
+          "sku": "SKU-SPEAKER-06",
+          "name": "Bluetooth Portable Speaker",
+          "quantity": 1,
+          "price_cents": 11990
+        }
+      ]
+    }
+  ]
+}

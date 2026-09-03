@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.3
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.9.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - pydantic>=2.6.4
+          - pydantic-settings>=2.2.1
+          - structlog>=24.1.0
+          - tenacity>=8.2.3
+          - typer>=0.12.0
+          - rich>=13.7.1
+          - fastapi>=0.110.0
+        args: [--strict, --config-file=pyproject.toml]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude_files: 'data/.*|tests/fixtures/.*'
