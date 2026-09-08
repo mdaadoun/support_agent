@@ -10,6 +10,10 @@ class SupportAgentBaseError(Exception):
         self.error_code = error_code
 
 
+# Universal architecture alias for SupportAgentBaseError
+AppBaseError = SupportAgentBaseError
+
+
 class ConfigurationError(SupportAgentBaseError):
     """Raised when application environment or settings are misconfigured."""
 

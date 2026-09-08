@@ -25,7 +25,7 @@
 **Dependencies:** None.  
 **Deliverables:** Poetry configuration, Ruff, Mypy strict setup, Pydantic settings, directory layout, Docker skeleton.
 
-- [ ] **Step 1.1: Dependency & Environment Configuration:**
+- [x] **Step 1.1: Dependency & Environment Configuration:**
   - Initialize Poetry project with Python `>= 3.11` constraints (`pyproject.toml`).
   - Configure Ruff linter/formatter rules (E, F, B, SIM, I) and Mypy strict mode (`strict = true`).
   - Create `Makefile` with shortcuts: `lint`, `typecheck`, `test`, `format`, `run-cli`, `run-api`.
