@@ -2,6 +2,7 @@
   "orders": [
     {
       "order_id": "CMD-10001",
+      "tenant_id": "default_tenant",
       "customer_email": "alice@example.com",
       "status": "DELIVERED",
       "carrier": "Colissimo",
@@ -24,6 +25,7 @@
     },
     {
       "order_id": "CMD-10002",
+      "tenant_id": "default_tenant",
       "customer_email": "bob@example.com",
       "status": "DELAYED",
       "carrier": "Chronopost Express",
@@ -46,6 +48,7 @@
     },
     {
       "order_id": "CMD-10003",
+      "tenant_id": "default_tenant",
       "customer_email": "charlie@example.com",
       "status": "DELIVERED",
       "carrier": "DHL Standard",
@@ -68,6 +71,7 @@
     },
     {
       "order_id": "CMD-10004",
+      "tenant_id": "default_tenant",
       "customer_email": "diana@example.com",
       "status": "IN_TRANSIT",
       "carrier": "Colissimo",
@@ -90,6 +94,7 @@
     },
     {
       "order_id": "CMD-10005",
+      "tenant_id": "default_tenant",
       "customer_email": "eve@example.com",
       "status": "CANCELLED",
       "carrier": "Colissimo",
@@ -112,6 +117,7 @@
     },
     {
       "order_id": "CMD-10006",
+      "tenant_id": "default_tenant",
       "customer_email": "frank@example.com",
       "status": "RETURNED",
       "carrier": "Chronopost",
@@ -129,6 +135,29 @@
           "name": "Bluetooth Portable Speaker",
           "quantity": 1,
           "price_cents": 11990
+        }
+      ]
+    },
+    {
+      "order_id": "CMD-10007",
+      "tenant_id": "default_tenant",
+      "customer_email": "grace@example.com",
+      "status": "DELIVERED",
+      "carrier": "Colissimo",
+      "tracking_number": "COL-FR-10007-OK",
+      "ordered_at": "2026-08-28T09:00:00Z",
+      "shipped_at": "2026-08-29T10:00:00Z",
+      "estimated_delivery": "2026-09-01T18:00:00Z",
+      "actual_delivery": "2026-09-01T14:20:00Z",
+      "items_total_ttc_cents": 4500,
+      "shipping_fee_ttc_cents": 490,
+      "is_express": false,
+      "items": [
+        {
+          "sku": "SKU-USB-HUB-07",
+          "name": "7-in-1 USB-C Hub",
+          "quantity": 1,
+          "price_cents": 4500
         }
       ]
     }

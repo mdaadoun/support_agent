@@ -8,7 +8,7 @@ WORKDIR /build
 RUN pip install --no-cache-dir poetry==1.8.2
 
 # Copy dependency specifications
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 
 # Install only production dependencies into system site-packages
 RUN poetry config virtualenvs.create false \

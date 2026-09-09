@@ -6,11 +6,15 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: support_agent_api
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
       - SUPPORT_AGENT_ENV=production
       - LOG_LEVEL=INFO
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEFAULT_TENANT_ID=default_tenant
       - REDIS_URL=redis://redis:6379/0
       - POSTGRES_DSN=postgresql://support_user:support_pass@postgres:5432/support_agent_db
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -19,10 +23,13 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    networks:
+      - support_network
 
   redis:
     image: redis:7-alpine
     container_name: support_agent_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     healthcheck:
@@ -30,10 +37,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - support_network
 
   postgres:
     image: postgres:15-alpine
     container_name: support_agent_postgres
+    restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
@@ -47,6 +57,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - support_network
+
+networks:
+  support_network:
+    driver: bridge
 
 volumes:
   postgres_data:

@@ -83,3 +83,55 @@ Wrap into AppBaseError derivative (e.g., OrderNotFoundError)
 FSM Controller / API Layer (Safe Handling & Error Code Dispatch)
 ```
 All system exceptions derive from `AppBaseError` (aliasing `SupportAgentBaseError`). Upstream library exceptions never cross layer boundaries unwrapped, ensuring the "Zero Naked Crash" guarantee.
+
+### Centralized Settings Resolution Flow (`src/core/config.py`)
+```text
+Environment (.env / OS ENV)
+            │
+            ▼
+Settings Schema Validation (pydantic-settings BaseSettings)
+            │
+            ▼
+Immutability & Boundary Enforcement (frozen=True)
+            │
+            ▼
+get_settings() [LRU Cache Singleton] ──► Presentation, Agent, Tool, and Persistence Layers
+```
+The centralized configuration pipeline parses runtime environment variables, enforces immutable type safety via `SettingsConfigDict(frozen=True)`, and caches the singleton `Settings` instance for $O(1)$ amortized access across all modules.
+
+### Mock ERP Seed Data Flow (`src/clients/erp_client.py` & `data/mock_orders.json`)
+```text
+data/mock_orders.json (Multi-tenant Seed Data with tenant_id)
+            │
+            ▼
+MockERPClient._read_orders_raw()
+            │
+            ▼
+Tenacity Retry Wrapper (2 attempts with exponential backoff)
+            │
+            ▼
+Order Lookup by ID (CMD-XXXXX) ──[Not Found]──► OrderNotFoundError (AppBaseError)
+            │
+            ▼ [Found]
+Raw Order Dictionary ──► Domain Rules & Tool Execution Adapters
+```
+The mock ERP store decouples agent development from live backend dependencies. Orders are loaded and validated against the schema, with automated retries and exception shielding translating missing records into domain-level `OrderNotFoundError`.
+
+### Container Stack Lifecycle & Orchestration Flow (`docker/`)
+```text
+docker compose up
+        │
+        ├──► Redis Container (redis:7-alpine) ──► Healthcheck: redis-cli ping
+        │                                                │
+        ├──► Postgres Container (postgres:15-alpine) ──► Healthcheck: pg_isready
+        │                                                │
+        ▼                                                ▼
+Backend Health Verified (condition: service_healthy) ◄───┘
+        │
+        ▼
+FastAPI API Container (UID 10001, port 8000, multi-stage runtime)
+        │
+        ├──► Isolated Bridge: support_network
+        └──► Persistent Volume: postgres_data
+```
+The container orchestration architecture guarantees deterministic system startup: the FastAPI API service remains held until Redis and PostgreSQL healthchecks pass, preventing transient socket initialization failures.

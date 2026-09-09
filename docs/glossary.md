@@ -21,6 +21,39 @@ Architectural rule prohibiting raw third-party exceptions (`httpx.HTTPError`, `r
 ### Fail-Fast Boundary Validation
 Validating input schemas and payload contracts at the ingress boundary using Pydantic V2 immutable DTOs (`frozen=True, extra="forbid"`) before passing data to domain workflows.
 
+### Modular Package Tree
+Hierarchical directory structure separating system responsibilities into dedicated packages (`api`, `agent`, `domain`, `models`, `security`, `tools`, `clients`, `persistence`, `observability`, `core`) with explicit module contracts and strict downward dependency flow.
+
+### Layer Isolation Guardrail
+Static and dynamic verification rule forbidding core domain modules from importing or depending on infrastructure, persistence, or presentation modules.
+
+### Mock ERP Seed Store
+Deterministic local data fixture providing representative transactional business entities (`data/mock_orders.json`) for testing external ERP adapter integrations without live backend dependencies.
+
+### Multi-Tenancy Tagging
+Mandatory inclusion of an explicit tenant identifier (`tenant_id`) on all persistent data entities to guarantee logical data isolation across organizations.
+
+### BaseSettings
+Pydantic Settings model base class that automatically parses, validates, and populates application configuration from environment variables, `.env` files, and explicit keyword arguments.
+
+### Configuration Immutability
+Architectural constraint designating configuration objects as frozen post-instantiation (`frozen=True`), preventing runtime mutations across concurrent tasks and preserving system consistency.
+
+### Configuration Shielding
+Boundary defense technique that intercepts upstream schema deserialization and validation failures (`pydantic.ValidationError`) and re-raises domain-specific `ConfigurationError` instances.
+
+### Multi-Stage Docker Build
+Container optimization technique that separates build-time dependencies (compilers, packaging managers) from the final minimal runtime image.
+
+### Unprivileged Container Execution
+Security practice of executing containerized processes under a dedicated non-root user (e.g. UID 10001) to restrict system privileges and protect host kernels.
+
+### Service Healthcheck Probing
+Automated runtime inspection commands (e.g., `redis-cli ping`, `pg_isready`) periodically executed by container runtimes to assess service viability and gate startup dependencies.
+
+### Named Volume Persistence
+Docker storage mechanism decoupled from container lifecycles that preserves stateful database data across container restarts and updates.
+
 ---
 
 ## 🤖 2. Artificial Intelligence & Agentic Concepts

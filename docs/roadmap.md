@@ -29,13 +29,13 @@
   - Initialize Poetry project with Python `>= 3.11` constraints (`pyproject.toml`).
   - Configure Ruff linter/formatter rules (E, F, B, SIM, I) and Mypy strict mode (`strict = true`).
   - Create `Makefile` with shortcuts: `lint`, `typecheck`, `test`, `format`, `run-cli`, `run-api`.
-- [ ] **Step 1.2: Centralized Settings Configuration:**
+- [x] **Step 1.2: Centralized Settings Configuration:**
   - Implement `src/core/config.py` using `pydantic-settings` (`BaseSettings`).
   - Define environment variables with defaults: LLM model, API keys, Redis URL, PostgreSQL DSN, max iterations (default 3), confidence threshold (0.85).
-- [ ] **Step 1.3: Package Skeleton & Mock ERP Seed Data:**
+- [x] **Step 1.3: Package Skeleton & Mock ERP Seed Data:**
   - Create modular directory tree (`src/api`, `src/agent`, `src/domain`, `src/models`, `src/security`, `src/tools`, `src/clients`, `src/persistence`, `src/observability`, `tests/`).
   - Populate `data/mock_orders.json` with representative order scenarios (delivered, delayed, cancelled, returned).
-- [ ] **Step 1.4: Container Stack Skeleton:**
+- [x] **Step 1.4: Container Stack Skeleton:**
   - Create `docker/docker-compose.yml` specifying FastAPI service, Redis 7 Alpine, and PostgreSQL 15 Alpine.
 
 **Verification Checkpoint:**  
