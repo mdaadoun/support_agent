@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, ConfigDict
 
+__all__ = ["BaseDTO"]
+
 
 class BaseDTO(BaseModel):
     """Immutable base data transfer object rejecting extra attributes."""

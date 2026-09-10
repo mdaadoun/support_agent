@@ -49,18 +49,18 @@
 **Dependencies:** Phase 1.  
 **Deliverables:** Pydantic V2 immutable DTOs (`frozen=True`), domain enums, standardized exception hierarchy.
 
-- [ ] **Step 2.1: Business Enums & Base Model:**
+- [x] **Step 2.1: Business Enums & Base Model:**
   - Define `BaseDTO` with `frozen=True` and `extra="forbid"` (`src/models/base.py`).
   - Define enums: `OrderStatusEnum`, `IntentEnum`, `RefundReasonCode`, `ResolutionStatusEnum` (`src/models/enums.py`).
-- [ ] **Step 2.2: Ingestion & Extraction Schemas:**
+- [x] **Step 2.2: Ingestion & Extraction Schemas:**
   - Implement `InboundEmailMessage` with email syntax validation (`src/models/email.py`).
   - Implement `ExtractedDemand` with regex pattern validation for `CMD-[0-9]{5,8}` (`src/models/extraction.py`).
-- [ ] **Step 2.3: Tool Execution & Trace Schemas:**
+- [x] **Step 2.3: Tool Execution & Trace Schemas:**
   - Implement `OrderDetailsResult`, `RefundEligibilityResult`, `DeliveryDelayResult` (`src/models/tools.py`).
   - Implement `ToolExecutionResult` and `ToolCallTrace` for deterministic tool reporting (`src/models/tools.py`).
-- [ ] **Step 2.4: Final Certified Response Schema:**
+- [x] **Step 2.4: Final Certified Response Schema:**
   - Implement `AgentFinalResponse` ensuring mandatory FinOps, latency, and escalation metadata (`src/models/response.py`).
-- [ ] **Step 2.5: Standardized Exception Shielding Hierarchy:**
+- [x] **Step 2.5: Standardized Exception Shielding Hierarchy:**
   - Create `SupportAgentBaseError` in `src/core/exceptions.py`.
   - Implement domain sub-exceptions: `SecurityAccessError`, `ToolExecutionError`, `FSMStateError`, `CircuitBreakerError`, `ConfigurationError`.
 

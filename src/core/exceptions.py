@@ -1,5 +1,16 @@
 """Standardized domain exceptions and error taxonomy for 8_support_agent."""
 
+__all__ = [
+    "AppBaseError",
+    "CircuitBreakerError",
+    "ConfigurationError",
+    "FSMStateError",
+    "OrderNotFoundError",
+    "SecurityAccessError",
+    "SupportAgentBaseError",
+    "ToolExecutionError",
+]
+
 
 class SupportAgentBaseError(Exception):
     """Base exception for all internal support agent domain errors."""

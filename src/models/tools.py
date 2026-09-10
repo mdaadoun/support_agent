@@ -8,6 +8,14 @@ from pydantic import Field
 from models.base import BaseDTO
 from models.enums import OrderStatusEnum, RefundReasonCode
 
+__all__ = [
+    "DeliveryDelayResult",
+    "OrderDetailsResult",
+    "RefundEligibilityResult",
+    "ToolCallTrace",
+    "ToolExecutionResult",
+]
+
 
 class OrderDetailsResult(BaseDTO):
     """Normalized order information returned by order query tool."""
@@ -60,4 +68,4 @@ class ToolCallTrace(BaseDTO):
     arguments: dict[str, Any]
     result: ToolExecutionResult
     timestamp: datetime
-    duration_ms: float
+    duration_ms: float = Field(ge=0.0)

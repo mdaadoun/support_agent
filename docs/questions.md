@@ -61,3 +61,93 @@ By default, containers execute as the root user (`UID 0`). In the event of an ap
 ### Q10: How does `condition: service_healthy` in Docker Compose prevent startup race conditions in distributed agent pipelines?
 **Answer:**
 Standard `depends_on` only waits until the dependency container process launches, which occurs well before the database engine binds sockets and accepts network connections. Using `condition: service_healthy` coupled with active healthcheck probes (such as `pg_isready` or `redis-cli ping`) ensures that the FastAPI application container is held back until PostgreSQL and Redis have verified internal operational readiness, eliminating transient startup connection failures.
+
+---
+
+### Q11: Why adopt Python 3.11+ `StrEnum` over standard `enum.Enum` or raw string literal types (`Literal[...]`)?
+**Answer:**
+Standard `Enum` requires accessing `.value` for string comparison and often serializes unexpectedly in third-party libraries or JSON encoders without custom serializers. `StrEnum` members are direct instances of `str`, ensuring zero-overhead serialization and seamless interoperability with string-based APIs, while still preserving distinct type identity, exhaustive pattern matching in Mypy strict mode, and runtime validation that raw `Literal` types cannot provide when instantiated dynamically.
+
+---
+
+### Q12: How does `frozen=True` in Pydantic V2 impact object hashability and memory overhead compared to standard Python dataclasses?
+**Answer:**
+When `frozen=True` is enabled, Pydantic V2 automatically generates a deterministic `__hash__` method based on the model's immutable field values. This allows `BaseDTO` instances to be used directly in hash-based collections (`set`, keys in `dict`), facilitating deduplication and idempotency caching. In addition, Pydantic V2's core validation engine is compiled in Rust (`pydantic-core`), ensuring that immutability and schema validation incur minimal runtime overhead.
+
+---
+
+### Q13: How does `extra="forbid"` in `BaseDTO` defend against payload tampering and parameter injection across agent boundaries?
+**Answer:**
+In an autonomous support agent pipeline, untrusted external inputs (inbound customer emails, scraped bodies, or LLM function call arguments) are parsed into domain DTOs. If extra fields were silently accepted or ignored (`extra="ignore"`), injected attributes or typos could bypass business validation and propagate unnoticed through state transitions. Enforcing `extra="forbid"` ensures that any unexpected property immediately raises a `ValidationError`, failing closed at the boundary before uncertified data can reach tools or domain rules.
+
+---
+
+### Q14: Why use `tuple[str, ...]` instead of `list[str]` for `sub_queries` in `ExtractedDemand` when `frozen=True` is configured?
+**Answer:**
+In Pydantic V2, `frozen=True` prevents reassigning model attributes, but if an attribute holds a mutable `list`, its contents can still be modified in-place via `.append()` or `.pop()`. Using `tuple[str, ...]` enforces true deep immutability, ensuring that concurrent coroutines or tools cannot alter state during execution, while maintaining deterministic model hashability.
+
+---
+
+### Q15: Why validate order IDs at the extraction schema layer using regex (`^CMD-[0-9]{5,8}$`) rather than delegating validation to the ERP client?
+**Answer:**
+Validating order IDs at the boundary adheres to the Fail-Fast principle. In an agentic architecture, invoking an external ERP client incurs network latency, token expenditure, and circuit breaker overhead. Validating format upstream prevents invalid requests from reaching downstream systems, immediately routing to user clarification or human escalation.
+
+---
+
+### Q16: How does `EmailStr` boundary validation support the PII Access Control guard in the security layer?
+**Answer:**
+The security layer verifies authorization by comparing `inbound_message.sender_email` against the order owner's email (`order.customer_email`). Enforcing RFC-compliant syntax via `EmailStr` at the boundary eliminates malformed or malicious email formats, preventing parser exploits and ensuring consistent string matching across domain layers.
+
+---
+
+### Q17: Why do tools return a `ToolExecutionResult(success=False, ...)` container instead of letting Python exceptions propagate up the stack?
+**Answer:**
+In an autonomous agent architecture (specifically ReAct loops), tool executions represent environmental interactions. If an external service returns a 404 or validation error, raising an uncaught exception abruptly terminates the agent workflow. Encapsulating failures inside an immutable `ToolExecutionResult` allows the agent loop to ingest the error as an `Observation`, enabling autonomous self-correction, alternative tool dispatch, or controlled FSM state transitions to `REQUIRES_HUMAN`.
+
+---
+
+### Q18: Why represent monetary figures in integer cents (`_cents: int = Field(ge=0)`) across tool DTOs rather than floating-point numbers?
+**Answer:**
+Floating-point numbers (`float`) suffer from binary representation inaccuracies (e.g. `0.1 + 0.2 != 0.3`), which can accumulate rounding errors during multi-step refunds, tax calculations, or voucher applications. Enforcing integer cents (`items_total_ttc_cents`, `delay_compensation_voucher_cents`) guarantees 100% deterministic arithmetic across Python business rules and external ERP systems, while `Field(ge=0)` eliminates invalid negative financial values.
+
+---
+
+### Q19: How does `ToolCallTrace` facilitate both FinOps telemetry and agent evaluation harnesses?
+**Answer:**
+`ToolCallTrace` captures the complete invocation context—including exact arguments, execution latency (`duration_ms`), and standardized results. For FinOps, it provides precise latency metrics to identify performance bottlenecks across external services. For evaluation and testing, traces provide replayable fixtures that can be logged to JSON Lines or PostgreSQL, allowing offline simulation and regression testing of agent decision-action trajectories without re-invoking live infrastructure.
+
+---
+
+### Q20: What is the architectural purpose of machine-readable error_code strings on all AppBaseError subclasses?
+**Answer:**
+While exception messages provide human-readable diagnostic text, message strings are subject to formatting variations, template adjustments, and potential localization differences. Standardizing uppercase machine-readable error_code strings (such as `SECURITY_UNAUTHORIZED_ACCESS` or `CIRCUIT_BREAKER_TRIPPED`) allows the FSM controller, logging middleware, and FinOps telemetry pipelines to branch deterministically without fragile regex parsing of error strings.
+
+---
+
+### Q21: How does the "Zero Naked Crash" policy protect the integrity of the ReAct agent state machine?
+**Answer:**
+Raw third-party library exceptions (like `httpx.HTTPStatusError`, `psycopg2.OperationalError`, or `redis.ConnectionError`) leak infrastructure details across module boundaries and abruptly terminate Python coroutines. By catching and wrapping all external failures into domain exceptions derived from `AppBaseError` (or shielding them in `ToolExecutionResult`), the agent architecture ensures that errors are treated as structured domain events. The FSM can safely transition into controlled terminal states like `REQUIRES_HUMAN` rather than crashing the web thread or CLI runner.
+
+---
+
+### Q22: Why provide dedicated typed attributes like tool_name on ToolExecutionError and order_id on OrderNotFoundError?
+**Answer:**
+Dedicated attributes eliminate the need to parse error messages with regular expressions when constructing structured JSON logs, audit traces, or API error payloads. Upstream handlers and logging filters can directly inspect `exc.tool_name` or `exc.order_id` to attach structured metadata to observability spans, improving searchability in log aggregators and speeding up incident resolution.
+
+---
+
+### Q23: Why enforce conditional cross-field validation for human_escalation_reason via @model_validator(mode='after')?
+**Answer:**
+When an autonomous support agent cannot resolve a customer inquiry and flags the ticket for human review (`status_resolution = REQUIRES_HUMAN_REVIEW`), human operators need immediate, unambiguous context on why automation halted (e.g. PII mismatch, policy ambiguity, legal threat). Allowing a null or whitespace-only escalation reason would lead to operator confusion and triage delays. Cross-field validation enforces at the boundary that any human escalation must carry an explanatory reason before the response object can be instantiated.
+
+---
+
+### Q24: What is the architectural advantage of packaging FinOps metrics (tokens_prompt, tokens_completion, cost_estimation_usd) directly within AgentFinalResponse?
+**Answer:**
+In distributed agent systems, logging cost metrics out-of-band in separate metric sinks risks synchronization skew and lost attribution when linking token consumption to specific customer sessions. Embedding certified token counts, latency, and estimated USD expenditure directly in the final response payload guarantees that every API caller, webhook consumer, and audit persistence adapter receives an atomic, immutable snapshot of operational costs alongside the business resolution.
+
+---
+
+### Q25: Why enforce a strict max_length=250 character limit on internal_technical_summary in AgentFinalResponse?
+**Answer:**
+While `email_response_body` contains full customer-facing communication, the internal technical summary is designed for operational observability dashboards, escalation triage queues, and alerting webhooks. Capping the length prevents unbounded LLM verbosity from polluting monitoring queues, ensures deterministic memory utilization across database indices, and forces the model to generate concise, high-signal diagnostic overviews.

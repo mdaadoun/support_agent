@@ -6,6 +6,8 @@ from pydantic import EmailStr, Field
 
 from models.base import BaseDTO
 
+__all__ = ["InboundEmailMessage"]
+
 
 class InboundEmailMessage(BaseDTO):
     """Raw validated inbound email payload before agent processing."""

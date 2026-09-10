@@ -79,3 +79,104 @@ Continuous tracking of prompt tokens, completion tokens, execution duration, and
 
 ### Idempotency Caching
 Hashing tool execution contexts (`SHA-256(session_id + tool_name + sorted_args)`) in Redis with a 15-minute TTL to prevent redundant executions and optimize resource usage.
+
+---
+
+## 📋 4. Domain Contracts & Business Enums
+
+### BaseDTO
+Root immutable Pydantic V2 model enforcing `frozen=True` and `extra="forbid"`, guaranteeing zero runtime mutation, hashability, and strict contract adherence across boundaries.
+
+### StrEnum
+Python 3.11+ string-backed enumeration whose members inherit directly from `str`, providing seamless JSON serialization and strict static typing without manual `.value` indirection.
+
+### OrderStatusEnum
+Core domain enumeration capturing carrier and ERP shipment lifecycle states (PENDING, PROCESSING, SHIPPED, IN_TRANSIT, DELIVERED, DELAYED, CANCELLED, RETURNED, UNKNOWN).
+
+### IntentEnum
+Domain classification taxonomy for customer queries (ORDER_STATUS, DELIVERY_DELAY, REFUND_REQUEST, ORDER_INFORMATION, MIXED_QUERY, OUT_OF_SCOPE, INFORMATION_MISSING).
+
+### RefundReasonCode
+Machine-readable qualification codes explaining statutory cooling-off eligibility or express delay vouchers (WITHIN_LEGAL_TIMEFRAME, TIMEFRAME_EXCEEDED, NOT_DELIVERED_YET, EXPRESS_DELAY_COMPENSATED).
+
+### ResolutionStatusEnum
+Terminal operational classification for customer requests indicating automatic resolution or human escalation (RESOLVED_AUTOMATICALLY, REQUIRES_HUMAN_REVIEW).
+
+---
+
+## 📨 5. Ingestion & Extraction Schemas
+
+### InboundEmailMessage
+Boundary DTO encapsulating raw, validated incoming customer emails with RFC-compliant email syntax and non-empty content constraints.
+
+### ExtractedDemand
+Structured domain entity extracted from customer communications representing intent, order ID, verified customer email, legal threat flag, and sub-queries.
+
+### EmailStr
+Pydantic V2 specialized type providing RFC 5322 email syntax validation at ingress boundary deserialization.
+
+### Order ID Regex
+Anchored regular expression (`^CMD-[0-9]{5,8}$`) enforcing ERP-compliant order identifiers before tool dispatch.
+
+### Deep Immutability
+Architectural design ensuring that both the top-level model and all nested composite collections (such as tuples over lists) are immutable post-instantiation.
+
+---
+
+## 🔧 6. Tool Execution & Observability Schemas
+
+### OrderDetailsResult
+Normalized logistical and financial snapshot DTO returned by order query tools, encapsulating lifecycle statuses, carrier tracking, and cents-based monetary totals.
+
+### RefundEligibilityResult
+Deterministic output DTO of statutory return evaluation expressing eligibility, elapsed calendar days, refundable item totals, delay vouchers, and machine-readable reason code.
+
+### DeliveryDelayResult
+Logistical computation DTO quantifying delivery delay in calendar days and flagging delay status.
+
+### ToolExecutionResult
+Generic shielded result envelope returned by all MCP-compatible tools, providing standardized success status, payload data, and machine-readable error codes.
+
+### ToolCallTrace
+Immutable audit trail DTO recording a discrete tool invocation with unique call ID, input arguments, execution result, timestamp, and millisecond latency.
+
+---
+
+## 🛡️ 7. Exception Shielding & Error Taxonomy
+
+### SupportAgentBaseError
+Root domain exception class for the support agent system, establishing standardized message handling and machine-readable error_code taxonomy.
+
+### AppBaseError
+Universal engineering architecture alias for SupportAgentBaseError, providing cross-repo consistency with Pax engineering standards.
+
+### SecurityAccessError
+Domain exception raised when an operation violates security policy, PII ownership verification, or cross-tenant isolation boundaries.
+
+### ToolExecutionError
+Domain exception raised when an internal or external tool adapter fails during invocation, carrying the specific tool_name.
+
+### FSMStateError
+Domain exception raised when an invalid or forbidden state transition is requested in the agent lifecycle controller.
+
+### CircuitBreakerError
+Resilience domain exception raised when repeated upstream service failures trip the circuit breaker.
+
+### OrderNotFoundError
+Domain exception raised when an order lookup cannot locate a record in the ERP store, preserving the queried order_id.
+
+---
+
+## 🎯 8. Final Certified Response & Escalation Schemas
+
+### AgentFinalResponse
+Certified output DTO emitted upon session completion, encapsulating resolution status, customer email body, internal diagnostics, escalation reasoning, and FinOps telemetry.
+
+### Cross-Field Model Validation
+Post-validation technique (`@model_validator(mode="after")`) enforcing interdependent field constraints, such as requiring non-empty human escalation reasons when human review is indicated.
+
+### Executive Diagnostic Summary
+Bounded string representation (`max_length=250`) within the response contract providing condensed internal technical context for support supervisors and audit logs.
+
+### Confidence Score Invariant
+Strict floating-point constraint ($0.0 \le \text{confidence} \le 1.0$) evaluating agent decision certainty before finalizing automatic customer responses.

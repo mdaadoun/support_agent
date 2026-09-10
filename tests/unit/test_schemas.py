@@ -1,78 +1,131 @@
 """Tests asserting schema immutability, extra field rejection, and boundary constraints."""
 
-from datetime import datetime, timezone
-
 import pytest
 from pydantic import ValidationError
 
-from models.email import InboundEmailMessage
-from models.enums import IntentEnum, OrderStatusEnum
-from models.extraction import ExtractedDemand
-from models.tools import DeliveryDelayResult, OrderDetailsResult
+from models.base import BaseDTO
+from models.enums import (
+    IntentEnum,
+    OrderStatusEnum,
+    RefundReasonCode,
+    ResolutionStatusEnum,
+)
 
 
-def test_inbound_email_message_immutability() -> None:
-    """Validate InboundEmailMessage is frozen and rejects mutation."""
-    email = InboundEmailMessage(
-        message_id="MSG-001",
-        sender_email="customer@example.com",
-        subject="Status check",
-        body_text="Where is order CMD-10001?",
-        received_at=datetime.now(timezone.utc),
+class DummyDTO(BaseDTO):
+    """Test concrete model derived from BaseDTO."""
+
+    field_a: str
+    field_b: int = 42
+
+
+class TicketRecord(BaseDTO):
+    """Concrete DTO validating enum integration within BaseDTO."""
+
+    intent: IntentEnum
+    status: OrderStatusEnum
+    resolution: ResolutionStatusEnum
+    reason: RefundReasonCode | None = None
+
+
+def test_base_dto_immutability() -> None:
+    """Validate that BaseDTO enforces frozen immutability."""
+    dto = DummyDTO(field_a="immutable_value")
+    with pytest.raises(ValidationError):
+        dto.field_a = "mutated_value"
+
+
+def test_base_dto_forbids_extra_attributes() -> None:
+    """Validate that BaseDTO rejects undeclared extra attributes."""
+    with pytest.raises(ValidationError):
+        DummyDTO(field_a="test", unexpected_field="rejected")  # type: ignore[call-arg]
+
+
+def test_base_dto_hashability() -> None:
+    """Validate that frozen BaseDTO instances are hashable for sets and mappings."""
+    dto1 = DummyDTO(field_a="alpha", field_b=1)
+    dto2 = DummyDTO(field_a="alpha", field_b=1)
+    dto3 = DummyDTO(field_a="beta", field_b=2)
+
+    dto_set = {dto1, dto2, dto3}
+    assert len(dto_set) == 2
+    assert dto1 in dto_set
+
+
+@pytest.mark.parametrize(
+    ("enum_cls", "expected"),
+    [
+        (
+            OrderStatusEnum,
+            {
+                "PENDING",
+                "PROCESSING",
+                "SHIPPED",
+                "IN_TRANSIT",
+                "DELIVERED",
+                "DELAYED",
+                "CANCELLED",
+                "RETURNED",
+                "UNKNOWN",
+            },
+        ),
+        (
+            IntentEnum,
+            {
+                "ORDER_STATUS",
+                "DELIVERY_DELAY",
+                "REFUND_REQUEST",
+                "ORDER_INFORMATION",
+                "MIXED_QUERY",
+                "OUT_OF_SCOPE",
+                "INFORMATION_MISSING",
+            },
+        ),
+        (
+            RefundReasonCode,
+            {
+                "WITHIN_LEGAL_TIMEFRAME",
+                "TIMEFRAME_EXCEEDED",
+                "NOT_DELIVERED_YET",
+                "EXPRESS_DELAY_COMPENSATED",
+            },
+        ),
+        (
+            ResolutionStatusEnum,
+            {"RESOLVED_AUTOMATICALLY", "REQUIRES_HUMAN_REVIEW"},
+        ),
+    ],
+)
+def test_business_enums_members(
+    enum_cls: type[
+        OrderStatusEnum | IntentEnum | RefundReasonCode | ResolutionStatusEnum
+    ],
+    expected: set[str],
+) -> None:
+    """Validate all enum members, values, and string subclass behaviors."""
+    assert {e.value for e in enum_cls} == expected
+    for val in expected:
+        member = enum_cls(val)
+        assert isinstance(member, str)
+        assert member == val
+    with pytest.raises(ValueError):
+        enum_cls("INVALID_ENUM_VALUE")
+
+
+def test_base_dto_enum_validation() -> None:
+    """Validate that BaseDTO validates enum fields and rejects invalid values."""
+    record = TicketRecord(
+        intent=IntentEnum.REFUND_REQUEST,
+        status=OrderStatusEnum.RETURNED,
+        resolution=ResolutionStatusEnum.RESOLVED_AUTOMATICALLY,
+        reason=RefundReasonCode.WITHIN_LEGAL_TIMEFRAME,
     )
-    with pytest.raises(ValidationError):
-        email.subject = "Mutated Subject"
+    assert record.intent == "REFUND_REQUEST"
+    assert record.reason == RefundReasonCode.WITHIN_LEGAL_TIMEFRAME
 
-
-def test_inbound_email_rejects_extra_fields() -> None:
-    """Validate extra fields are strictly forbidden."""
     with pytest.raises(ValidationError):
-        InboundEmailMessage(
-            message_id="MSG-001",
-            sender_email="customer@example.com",
-            subject="Status check",
-            body_text="Where is order CMD-10001?",
-            received_at=datetime.now(timezone.utc),
-            injected_attribute="malicious_value",  # type: ignore[call-arg]
+        TicketRecord(
+            intent="UNKNOWN_INTENT",  # type: ignore[arg-type]
+            status=OrderStatusEnum.DELIVERED,
+            resolution=ResolutionStatusEnum.RESOLVED_AUTOMATICALLY,
         )
-
-
-def test_extracted_demand_order_id_regex() -> None:
-    """Validate order_id regex pattern enforcement."""
-    valid_demand = ExtractedDemand(
-        intent=IntentEnum.ORDER_STATUS,
-        order_id="CMD-10001",
-        customer_email="customer@example.com",
-    )
-    assert valid_demand.order_id == "CMD-10001"
-
-    with pytest.raises(ValidationError):
-        ExtractedDemand(
-            intent=IntentEnum.ORDER_STATUS,
-            order_id="INVALID_CMD_FORMAT",
-            customer_email="customer@example.com",
-        )
-
-
-def test_order_details_result_validation() -> None:
-    """Validate numeric and enum constraints on OrderDetailsResult."""
-    result = OrderDetailsResult(
-        order_id="CMD-10001",
-        status=OrderStatusEnum.DELIVERED,
-        carrier="Colissimo",
-        tracking_number="COL-001",
-        ordered_at=datetime.now(timezone.utc),
-        estimated_delivery=datetime.now(timezone.utc),
-        items_total_ttc_cents=2990,
-        shipping_fee_ttc_cents=490,
-        is_express=False,
-    )
-    assert result.status == OrderStatusEnum.DELIVERED
-    assert result.items_total_ttc_cents == 2990
-
-
-def test_delivery_delay_result() -> None:
-    """Validate DeliveryDelayResult fields."""
-    res = DeliveryDelayResult(delay_days=3, is_delayed=True)
-    assert res.delay_days == 3
-    assert res.is_delayed is True

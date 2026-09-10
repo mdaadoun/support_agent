@@ -5,6 +5,8 @@ from pydantic import EmailStr, Field
 from models.base import BaseDTO
 from models.enums import IntentEnum
 
+__all__ = ["ExtractedDemand"]
+
 
 class ExtractedDemand(BaseDTO):
     """Structured demand extracted from inbound customer email."""
