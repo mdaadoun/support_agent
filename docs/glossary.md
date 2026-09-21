@@ -180,3 +180,53 @@ Bounded string representation (`max_length=250`) within the response contract pr
 
 ### Confidence Score Invariant
 Strict floating-point constraint ($0.0 \le \text{confidence} \le 1.0$) evaluating agent decision certainty before finalizing automatic customer responses.
+
+---
+
+## ⚖️ 9. Deterministic Domain Rules & Statutory Consumer Rights
+
+### Statutory Withdrawal Right (14-Day Rule)
+Legal cooling-off right established under EU Directive 2011/83/EU entitling consumers to withdraw from a distance sales contract within 14 calendar days of acquiring physical possession of goods.
+
+### Exact Calendar Day Computation
+Deterministic date arithmetic computing elapsed full days between UTC-normalized calendar dates (`(date2 - date1).days`) rather than 24-hour seconds intervals or floating-point timestamps.
+
+### Zero LLM Financial Authority
+Architectural principle prohibiting large language models from deciding financial amounts, approving refunds, or generating vouchers without backing deterministic tool execution payloads.
+
+### RefundReasonCode.NOT_DELIVERED_YET
+Machine-readable domain classification indicating an order is either not yet delivered (`delivery_date` is `None`) or the inquiry was filed prior to confirmed delivery.
+
+### BusinessRuleViolationError
+Domain exception subclassing `AppBaseError` raised when domain invariants or boundary constraints (e.g. non-negative monetary figures, strict datetime types) are breached.
+
+### Shipping Delay Drift
+The non-negative count of calendar days elapsed between a carrier's promised estimated delivery date and the reference or actual delivery date.
+
+### Express Compensation Voucher
+Commercial goodwill voucher credit equal to 100% of the customer's shipping fee, granted automatically when an express shipment is delayed by more than 5 calendar days.
+
+### Commercial Policy Threshold (delay_days > 5)
+Deterministic business rule boundary establishing that only express shipment delays strictly exceeding 5 full calendar days qualify for shipping fee reimbursement vouchers.
+
+### RefundReasonCode.EXPRESS_DELAY_COMPENSATED
+Machine-readable domain classification indicating that while an order's statutory return window has expired or is undelivered, the customer qualifies for an express shipping delay compensation voucher.
+
+---
+
+## 🔌 10. ERP Integration & Resilient Adapters
+
+### Mock ERP Client Adapter
+Infrastructure client module (`src/clients/erp_client.py`) simulating enterprise resource planning (ERP) logistics queries against local JSON storage (`data/mock_orders.json`) with retry resilience.
+
+### Transient Error Discrimination
+Inspection technique (`is_retryable_exception`) identifying recoverable I/O faults (timeouts, connection resets) while bypassing permanent domain errors (e.g. `OrderNotFoundError`).
+
+### CircuitBreakerError Chaining
+Architecture error shielding pattern where persistent upstream failure causes (`ConnectionError`, `TimeoutError`) are chained to `CircuitBreakerError` via `from exc` to preserve debugging context without leaking naked exceptions.
+
+### Network Failure Simulation Hook
+Internal client mechanism (`simulate_transient_network_failure`) allowing test harnesses to inject controllable network interruptions to verify retry recovery and circuit breaker tripping.
+
+
+

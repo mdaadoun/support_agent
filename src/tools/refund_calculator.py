@@ -13,10 +13,12 @@ from tools.base import ToolInterface
 class RefundCalculatorArgs(BaseModel):
     """Arguments for calculate_refund_eligibility tool."""
 
-    delivery_date: datetime
+    delivery_date: datetime | None = None
     request_date: datetime
     item_prices_cents: list[int] = Field(default_factory=list)
     shipping_fee_cents: int = Field(default=0, ge=0)
+    is_express: bool = False
+    delay_days: int = Field(default=0, ge=0)
 
 
 class RefundCalculatorTool(ToolInterface):
@@ -25,7 +27,7 @@ class RefundCalculatorTool(ToolInterface):
     name: str = "calculate_refund_eligibility"
     description: str = (
         "Calculate return eligibility under the statutory 14-day cooling-off rule. "
-        "Returns refundable item total and reason code."
+        "Returns refundable item total, delay vouchers, and reason code."
     )
     args_schema: type[RefundCalculatorArgs] = RefundCalculatorArgs
 
@@ -38,6 +40,8 @@ class RefundCalculatorTool(ToolInterface):
                 request_date=args.request_date,
                 item_prices_cents=args.item_prices_cents,
                 shipping_fee_cents=args.shipping_fee_cents,
+                is_express=args.is_express,
+                delay_days=args.delay_days,
             )
             return ToolExecutionResult(
                 success=True,

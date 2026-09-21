@@ -151,3 +151,60 @@ In distributed agent systems, logging cost metrics out-of-band in separate metri
 ### Q25: Why enforce a strict max_length=250 character limit on internal_technical_summary in AgentFinalResponse?
 **Answer:**
 While `email_response_body` contains full customer-facing communication, the internal technical summary is designed for operational observability dashboards, escalation triage queues, and alerting webhooks. Capping the length prevents unbounded LLM verbosity from polluting monitoring queues, ensures deterministic memory utilization across database indices, and forces the model to generate concise, high-signal diagnostic overviews.
+
+---
+
+### Q26: Why is calendar-day computation (`(req_date - del_date).days <= 14`) used rather than timestamp subtraction in seconds?
+**Answer:**
+Statutory consumer protection legislation (such as EU Directive 2011/83/EU) defines cooling-off rights in full calendar days from the date of physical receipt. A customer who received a package at 08:00 on Day 0 and submits a return at 20:00 on Day 14 is legally within their statutory right. Timestamp subtraction in seconds would calculate 14.5 days and erroneously reject the claim. Normalizing datetimes to UTC dates and subtracting calendar days ensures exact legal compliance and eliminates time-of-day and timezone offset bugs.
+
+---
+
+### Q27: Why does `calculate_statutory_withdrawal` return a structured `RefundEligibilityResult` with `NOT_DELIVERED_YET` instead of raising an error when `delivery_date` is `None`?
+**Answer:**
+In customer support automation, an inquiry regarding returns for an order still in transit or cancelled is a frequent valid customer query, not an internal infrastructure fault. Raising an exception would disrupt the agent's ReAct cycle and force an unnecessary error handling recovery branch. Returning a deterministic `RefundEligibilityResult` model with `is_eligible_for_return=False` and `reason_code=NOT_DELIVERED_YET` gives the agent structured context to inform the customer and suggest appropriate alternatives (e.g., package tracking or pre-delivery cancellation).
+
+---
+
+### Q28: How does the pure function design of `calculate_statutory_withdrawal` comply with Clean Architecture and layer isolation guardrails?
+**Answer:**
+`calculate_statutory_withdrawal` has zero side-effects, performs no I/O, network requests, or database queries, and depends only on the standard library and domain DTOs. Residing in `src/domain/`, it is strictly decoupled from infrastructure and presentation layers. This enables fast, isolated unit testing without mocks, guarantees deterministic mathematical accuracy, and ensures business rules remain unaffected by upstream API or database changes.
+
+---
+
+### Q29: Why is shipping delay measured using UTC calendar date difference (`(ref_date - est_date).days`) rather than hourly timestamp subtraction?
+**Answer:**
+E-commerce logistics estimates communicate promised delivery dates at the calendar day level (e.g., "Expected August 17"). If an order is delivered on August 17 at 19:00 against an estimated timestamp of August 17 at 12:00, timestamp subtraction would register a 7-hour delay, whereas in customer-facing terms it arrived on the promised date. UTC calendar date subtraction prevents intra-day false alarms while eliminating timezone boundary drift.
+
+---
+
+### Q30: Why is `calculate_express_compensation` decoupled into an independent pure function rather than bundled inside `calculate_shipping_delay`?
+**Answer:**
+Decoupling adheres to the Single Responsibility Principle and maintains clean domain separation: `calculate_shipping_delay` is a pure logistical calculation reporting fact-based calendar drift (`DeliveryDelayResult`), while `calculate_express_compensation` encapsulates commercial policy and financial voucher rules. This separation allows shipping delay metrics to be queried independently by order status tools without calculating financial liabilities, while enabling voucher calculations to be reused across both delay tools and refund calculators.
+
+---
+
+### Q31: What ensures that an LLM cannot autonomously modify or hallucinate the 5-day express delay threshold?
+**Answer:**
+Universal Engineering Guardrail Rule 2 ("Zero LLM Financial Authority") strictly isolates all arithmetic and qualification logic in tested Python code. When a customer complains of a delay, the ReAct loop is constrained to call `calculate_delivery_delay`. The tool executes `calculate_express_compensation` deterministically; the LLM only observes the verified `voucher_compensation_cents` payload in the tool result and cannot authoritatively promise compensation unless certified by the domain engine.
+
+---
+
+### Q32: Why does `MockERPClient` avoid retrying `OrderNotFoundError` while retrying `ConnectionError` and `TimeoutError`?
+**Answer:**
+In distributed e-commerce systems, an order not found in the database is a business domain reality (the order ID does not exist), not an infrastructure failure. Retrying a 404/not-found inquiry with exponential backoff introduces useless latency (several seconds per failed query) and degrades customer responsiveness. Transient network glitches (timeouts, dropped TCP sockets), conversely, frequently succeed upon an immediate secondary attempt. `is_retryable_exception` explicitly discriminates transient faults from domain business errors.
+
+---
+
+### Q33: How does `MockERPClient` satisfy the "Zero Naked Crash" policy when interacting with the filesystem and network simulation?
+**Answer:**
+All raw filesystem and parsing errors (`OSError`, `json.JSONDecodeError`) are caught and shielded within `ConfigurationError(f"Failed to read ERP data store: {exc}") from exc`. Transient network failures that exhaust their retry budget are caught and re-raised as `CircuitBreakerError(...) from exc`. Every exception escaping `MockERPClient` inherits from `AppBaseError`, providing normalized `error_code` metadata and preserving the root cause in `__cause__` without exposing raw runtime crashes to the agent loop.
+
+---
+
+### Q34: Why provide both synchronous (`get_order_by_id`) and asynchronous (`get_order_by_id_async`) lookup methods on `MockERPClient`?
+**Answer:**
+Providing dual ingress contracts enables seamless integration across diverse execution contexts: synchronous lookups allow lightweight local CLI inspection scripts and deterministic unit tests to run without initializing asyncio event loops, while asynchronous lookups allow FastAPI endpoints, MCP tools, and concurrent ReAct agent coroutines to fetch order data without blocking the ASGI web worker thread.
+
+
+

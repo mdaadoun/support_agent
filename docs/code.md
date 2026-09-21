@@ -207,3 +207,95 @@ Agent Decision / Escalation ──► Cross-Field Validation (mode="after") ─�
 2. Model validators enforce cross-field invariants, guaranteeing that a non-empty `human_escalation_reason` is supplied whenever human review is indicated.
 3. Field boundaries enforce a confidence score in $[0.0, 1.0]$, non-negative token counts and financial costs, non-negative execution latency, and technical summaries $\le 250$ characters.
 4. The resulting certified DTO is serialized for API egress and persisted to audit repositories with zero risk of subsequent mutation.
+
+### Deterministic Statutory Withdrawal & Cooling-Off Calculation Flow (`src/domain/business_rules.py`)
+```text
+Inbound Tool Invocation (calculate_refund_eligibility)
+        │
+        ▼
+Input Boundary Validation (shipping_fee >= 0, item_prices >= 0)
+        │
+        ▼
+Undelivered Short-Circuit (delivery_date is None? ──► NOT_DELIVERED_YET)
+        │
+        ▼
+UTC Date Normalization (_to_utc_date)
+        │
+        ▼
+Exact Calendar Day Computation (diff_days = (req_date - del_date).days)
+        │
+        ├── diff_days < 0 ──────────────► NOT_DELIVERED_YET (Premature request)
+        ├── 0 <= diff_days <= 14 ───────► WITHIN_LEGAL_TIMEFRAME (Eligible, refund = sum(items))
+        └── diff_days > 14 ─────────────► TIMEFRAME_EXCEEDED (Ineligible, refund = 0)
+        │
+        ▼
+RefundEligibilityResult (frozen=True, extra="forbid")
+```
+1. Inbound refund requests pass delivery timestamp, customer inquiry timestamp, item price list, and shipping fees to `calculate_statutory_withdrawal`.
+2. Boundary assertions validate that monetary amounts are strictly non-negative; any negative financial figure or invalid date type raises `BusinessRuleViolationError`.
+3. If `delivery_date` is `None`, the function immediately short-circuits to return `RefundReasonCode.NOT_DELIVERED_YET` with zero refundable amount.
+4. Datetimes are normalized to UTC calendar dates via `_to_utc_date`, eliminating timezone offset drift and hour-of-day bias.
+5. Exact calendar day difference (`(req_date - del_date).days`) is computed:
+   - If inquiry precedes delivery (`diff_days < 0`), returns `NOT_DELIVERED_YET`.
+   - If within the 14-day statutory cooling-off window (`0 <= diff_days <= 14`), sets `is_eligible_for_return=True`, calculates refundable item total as sum of prices, and assigns `WITHIN_LEGAL_TIMEFRAME`.
+   - If exceeding 14 calendar days (`diff_days > 14`), marks request as ineligible with `TIMEFRAME_EXCEEDED` and zero refundable items total.
+6. Results are emitted as an immutable `RefundEligibilityResult` DTO, strictly separating deterministic domain arithmetic from LLM generation.
+
+### Shipping Delay Drift & Express Compensation Voucher Flow (`src/domain/business_rules.py`)
+```text
+Inbound Delay Query (calculate_delivery_delay)
+        │
+        ▼
+Date Type Validation & UTC Normalization (_to_utc_date)
+        │
+        ▼
+Calendar Drift Computation: diff = (ref_date - est_date).days
+        │
+        ▼
+DeliveryDelayResult(delay_days = max(0, diff), is_delayed = delay_days > 0)
+        │
+        ▼
+Express Policy Evaluation (is_express AND delay_days > 5 ?)
+        ├── TRUE  ──► 100% Shipping Fee Voucher (voucher_cents = shipping_fee_cents)
+        └── FALSE ──► Zero Voucher (voucher_cents = 0)
+```
+1. `calculate_shipping_delay` receives `estimated_delivery_date` and `reference_date`.
+2. Both dates are validated as `datetime` instances and normalized to UTC calendar dates via `_to_utc_date`.
+3. Elapsed calendar difference `(ref_date - est_date).days` is calculated; if non-positive (on-time or early), `delay_days` is clamped to `0` and `is_delayed` is `False`.
+4. Output is returned as an immutable `DeliveryDelayResult` DTO.
+5. If express compensation is evaluated (`calculate_express_compensation`), non-negative assertions guard `delay_days` and `shipping_fee_cents`.
+6. Under commercial policy, if `is_express` is True and `delay_days > 5`, a 100% shipping fee voucher is granted; otherwise 0 is returned.
+
+### Mock ERP Client Data Ingestion & Retry Shielding Flow (`src/clients/erp_client.py`)
+```text
+Inbound Order Query (get_order_by_id / get_order_by_id_async)
+        │
+        ▼
+Tenacity Retry Policy (max_attempts = 2, exponential backoff + jitter)
+        │
+        ▼
+Internal Worker (_fetch_order_direct)
+        │
+        ├── Transient Failure Injected? ──► Raise ConnectionError ──► Tenacity Retry (Attempt 2)
+        │                                                                  │
+        │                                                   Exhausted? ────┴──► CircuitBreakerError
+        ▼
+Read & Validate Storage (_read_orders_raw: data/mock_orders.json)
+        │
+        ├── Corrupt JSON / Missing File ──────────────────────────────────────► ConfigurationError
+        │
+        ▼
+Order ID Lookup
+        │
+        ├── Missing in Map? ──► OrderNotFoundError (Fail-Fast, Zero Retry)
+        └── Found in Map   ──► Return Order Record Dictionary
+```
+1. Inbound requests query order metadata via `get_order_by_id` or `get_order_by_id_async`.
+2. The lookup delegates to internal worker `_fetch_order_direct` wrapped inside a Tenacity retry orchestrator with `max_attempts=2`.
+3. If transient network errors occur (`ConnectionError`, `TimeoutError`), Tenacity catches them and retries with random exponential backoff; if retries are exhausted, the failure is caught and re-raised as a `CircuitBreakerError` preserving root cause context (`from exc`).
+4. File reading validates storage existence and parses JSON; any `OSError` or `json.JSONDecodeError` is caught and wrapped into `ConfigurationError`.
+5. If the queried `order_id` is missing from the indexed order map, `OrderNotFoundError` is raised immediately; because it represents a permanent domain state rather than transient fault, `is_retryable_exception` bypasses retries to fail fast without latency.
+6. Successfully located order payloads return raw dictionary records conforming to ERP schema contracts.
+
+
+

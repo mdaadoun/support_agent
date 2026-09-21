@@ -4,6 +4,7 @@ import pytest
 
 from core.exceptions import (
     AppBaseError,
+    BusinessRuleViolationError,
     CircuitBreakerError,
     ConfigurationError,
     FSMStateError,
@@ -88,6 +89,18 @@ def test_order_not_found_error() -> None:
     assert str(err) == "Order 'CMD-88888' not found."
 
 
+def test_business_rule_violation_error() -> None:
+    """Validate BusinessRuleViolationError attributes and inheritance."""
+    err = BusinessRuleViolationError("Item price negative")
+    assert isinstance(err, SupportAgentBaseError)
+    assert isinstance(err, AppBaseError)
+    assert err.error_code == "BUSINESS_RULE_VIOLATION"
+    assert err.message == "Item price negative"
+
+    custom_err = BusinessRuleViolationError("Invalid", error_code="INVALID_VAL")
+    assert custom_err.error_code == "INVALID_VAL"
+
+
 @pytest.mark.parametrize(
     "sub_exception",
     [
@@ -97,6 +110,7 @@ def test_order_not_found_error() -> None:
         FSMStateError("State fault"),
         CircuitBreakerError("Circuit breaker fault"),
         OrderNotFoundError("CMD-12345"),
+        BusinessRuleViolationError("Rule fault"),
     ],
 )
 def test_all_exceptions_caught_by_app_base_error(

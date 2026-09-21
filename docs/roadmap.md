@@ -75,13 +75,13 @@ Unit tests in `tests/unit/test_schemas.py` confirm model immutability, extra fie
 **Dependencies:** Phase 2.  
 **Deliverables:** Pure Python deterministic arithmetic engine, mock ERP client with retry and error mapping.
 
-- [ ] **Step 3.1: Statutory Withdrawal Business Logic (14-Day Rule):**
+- [x] **Step 3.1: Statutory Withdrawal Business Logic (14-Day Rule):**
   - Implement pure function `calculate_statutory_withdrawal(delivery_date, request_date, item_prices_cents, shipping_fee_cents)` in `src/domain/business_rules.py`.
   - Enforce exact calendar day computation (`(request_date - delivery_date).days <= 14`).
-- [ ] **Step 3.2: Shipping Delay & Express Compensation Logic:**
+- [x] **Step 3.2: Shipping Delay & Express Compensation Logic:**
   - Implement pure function `calculate_shipping_delay(estimated_delivery_date, reference_date)` in `src/domain/business_rules.py`.
   - Implement `calculate_express_compensation(delay_days, is_express, shipping_fee_cents)` granting 100% shipping fee voucher if `is_express` and `delay_days > 5`.
-- [ ] **Step 3.3: Mock ERP Client Adapter:**
+- [x] **Step 3.3: Mock ERP Client Adapter:**
   - Implement `src/clients/erp_client.py` loading and querying `data/mock_orders.json`.
   - Decorate lookups with Tenacity exponential retry (max 2 attempts) for network simulation.
   - Map missing orders cleanly to `OrderNotFoundError` without raising raw filesystem or HTTP exceptions.

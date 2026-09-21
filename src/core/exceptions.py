@@ -2,6 +2,7 @@
 
 __all__ = [
     "AppBaseError",
+    "BusinessRuleViolationError",
     "CircuitBreakerError",
     "ConfigurationError",
     "FSMStateError",
@@ -67,3 +68,12 @@ class OrderNotFoundError(SupportAgentBaseError):
     def __init__(self, order_id: str) -> None:
         super().__init__(f"Order '{order_id}' not found.", error_code="ORDER_NOT_FOUND")
         self.order_id = order_id
+
+
+class BusinessRuleViolationError(SupportAgentBaseError):
+    """Raised when an operation violates domain business rules or boundary constraints."""
+
+    def __init__(
+        self, message: str, error_code: str = "BUSINESS_RULE_VIOLATION"
+    ) -> None:
+        super().__init__(message, error_code=error_code)
