@@ -228,5 +228,24 @@ Architecture error shielding pattern where persistent upstream failure causes (`
 ### Network Failure Simulation Hook
 Internal client mechanism (`simulate_transient_network_failure`) allowing test harnesses to inject controllable network interruptions to verify retry recovery and circuit breaker tripping.
 
+---
 
+## 🛡️ 11. Security, Input Sanitization & XML Delimitation
 
+### XML Boundary Delimitation
+A defensive prompt containment technique that wraps untrusted user input within well-defined XML tags (`<user_email>...</user_email>`) in all LLM system and agent prompts, establishing an explicit structural boundary between trusted system instructions and untrusted external data.
+
+### Control Character Scrubbing
+The systematic removal of non-printable ASCII control codes (C0/C1) and Unicode format characters (such as zero-width spaces and bidirectional overrides) from untrusted inputs to prevent visual deception, terminal escape injection, and regex evasion.
+
+### Nested Tag Spoofing
+An adversarial prompt injection vector where an attacker crafts nested, partial, or malformed XML tags (e.g., `</user_email>` or `<system>`) inside the user input to escape designated data boundaries and inject rogue operational instructions into the model context.
+
+### Trojan Source / Bidi Overrides
+Unicode control characters (such as U+202E Right-to-Left Override) that manipulate the visual rendering order of text without altering the logical byte sequence, used by attackers to disguise malicious payloads as benign phrases.
+
+### Fixed-Point Tag Sanitization
+The iterative application of tag removal rules until the payload reaches a steady state where no further prohibited delimiters exist, defeating recursive evasion techniques.
+
+### Passive Input Framing
+A core architectural constraint instructing the LLM that content inside specified XML tags must be treated strictly as passive semantic information rather than executable commands or operational authority.

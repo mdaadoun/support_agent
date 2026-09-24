@@ -97,7 +97,7 @@ Unit tests in `tests/unit/test_schemas.py` confirm model immutability, extra fie
 **Dependencies:** Phase 2, Phase 3.  
 **Deliverables:** Input sanitizer, prompt injection filter, PII access controller, pre-flight demand extractor.
 
-- [ ] **Step 4.1: Input Sanitizer & XML Boundary Delimitation:**
+- [x] **Step 4.1: Input Sanitizer & XML Boundary Delimitation:**
   - Implement `src/security/sanitizer.py` wrapping raw inbound email text in `<user_email>...</user_email>`.
   - Scrub control characters and sanitize nested tag spoofing attempts.
 - [ ] **Step 4.2: Regex Entity Extraction:**

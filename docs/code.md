@@ -27,7 +27,7 @@
   - **`prompts.py`:** XML boundary encapsulation and prompt boundary definitions.
   - **`state.py`:** Session state and trajectory models.
 - **`security/`:** Defense-in-depth and isolation:
-  - **`sanitizer.py`:** `<user_email>` XML delimiter tagging and prompt injection detection.
+  - **`sanitizer.py`:** Defensive input sanitization: non-printable control character scrubbing, bidi/format override removal, bounded iterative tag spoofing neutralization (`[TAG_REMOVED]`), `<user_email>` XML boundary encapsulation, regex entity extraction (`extract_order_id`, `extract_email`), and prompt injection detection.
   - **`access_control.py`:** Cross-authorization email matching to prevent PII leakage.
 - **`tools/`:** MCP-compliant tool runtime:
   - **`base.py`:** `ToolInterface` protocol with exception shielding wrapper.
@@ -297,5 +297,35 @@ Order ID Lookup
 5. If the queried `order_id` is missing from the indexed order map, `OrderNotFoundError` is raised immediately; because it represents a permanent domain state rather than transient fault, `is_retryable_exception` bypasses retries to fail fast without latency.
 6. Successfully located order payloads return raw dictionary records conforming to ERP schema contracts.
 
-
-
+### Input Sanitization & XML Boundary Delimitation Flow (`src/security/sanitizer.py`)
+```text
+Raw Inbound Email Payload (wrap_user_email_payload)
+        │
+        ▼
+Type Validation (isinstance(raw_text, str) ?)
+        ├── FALSE ──► Raise BusinessRuleViolationError (INVALID_PAYLOAD_TYPE)
+        └── TRUE
+        │
+        ▼
+Control Character Scrubbing (scrub_control_characters)
+        │ ── Strips C0 controls (0x00-0x08, 0x0b, 0x0c, 0x0e-0x1f)
+        │ ── Strips DEL and C1 controls (0x7f-0x9f)
+        │ ── Strips Unicode bidi overrides & zero-width chars (U+200B-U+200F, U+202A-U+202E, U+2066-U+2069, U+FEFF)
+        │ ── Preserves standard formatting whitespace (\t, \n, \r)
+        │
+        ▼
+Fixed-Point Tag Sanitization (sanitize_tag_spoofing: max 5 iterations)
+        │ ── Match USER_EMAIL_TAG_PATTERN (< /? user_email ... >) ─────────► Replace with [TAG_REMOVED]
+        │ ── Match SPOOFED_TAG_PATTERN (< /? (system|instructions|...) >) ──► Replace with [TAG_REMOVED]
+        │ ── Reapply until convergence (defeats recursive nesting <<user_email>/user_email>)
+        │
+        ▼
+Boundary Delimitation Envelope
+        │
+        ▼
+Return Formatted Payload: "<user_email>\n{sanitized}\n</user_email>"
+```
+1. `wrap_user_email_payload` accepts raw inbound customer email text and validates that the payload is a valid string. Non-string inputs immediately raise `BusinessRuleViolationError` with code `INVALID_PAYLOAD_TYPE`.
+2. `scrub_control_characters` purges non-printable C0 and C1 control codes, as well as Unicode bidirectional override and zero-width characters (e.g. U+202E, U+200B, U+FEFF), neutralizing visual spoofing and regex evasion techniques while preserving legitimate formatting whitespace (`\t`, `\n`, `\r`).
+3. `sanitize_tag_spoofing` executes a bounded iterative loop (up to 5 passes) that substitutes all variants of `<user_email>` boundary tags (opening, closing, self-closing, attributes) and spoofed system/instruction delimiters (`<system>`, `<instructions>`, `<developer>`, `<admin>`, etc.) with `[TAG_REMOVED]`. Iterating until fixed-point convergence neutralizes recursive evasion payloads such as `<<user_email>/user_email>`.
+4. The sanitized content is wrapped securely in `<user_email>\n{sanitized}\n</user_email>` before transmission to downstream prompt managers and extraction engines.
