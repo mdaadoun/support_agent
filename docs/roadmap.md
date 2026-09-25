@@ -100,12 +100,12 @@ Unit tests in `tests/unit/test_schemas.py` confirm model immutability, extra fie
 - [x] **Step 4.1: Input Sanitizer & XML Boundary Delimitation:**
   - Implement `src/security/sanitizer.py` wrapping raw inbound email text in `<user_email>...</user_email>`.
   - Scrub control characters and sanitize nested tag spoofing attempts.
-- [ ] **Step 4.2: Regex Entity Extraction:**
+- [x] **Step 4.2: Regex Entity Extraction:**
   - Implement deterministic regex matcher for order numbers (`CMD-[0-9]{5,8}`) and customer email addresses (`src/security/sanitizer.py`).
-- [ ] **Step 4.3: PII Access Control Guard:**
+- [x] **Step 4.3: PII Access Control Guard:**
   - Implement `src/security/access_control.py` verifying `sender_email == order.customer_email`.
   - Return `SECURITY_UNAUTHORIZED_ACCESS` on mismatch and block data leakage.
-- [ ] **Step 4.4: Pre-Extraction Intent Classifier:**
+- [x] **Step 4.4: Pre-Extraction Intent Classifier:**
   - Implement pre-flight extractor identifying `INFORMATION_MISSING` (no order ID when required), `OUT_OF_SCOPE`, or aggressive legal litigation threats prior to tool dispatch.
 
 **Verification Checkpoint:**  

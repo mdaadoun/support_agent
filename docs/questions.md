@@ -223,3 +223,66 @@ Bidirectional override characters (Bidi controls) alter the rendering direction 
 ### Q37: How does iterative tag neutralization defend against recursive evasion attacks, and why is the loop bounded?
 **Answer:**
 If a sanitizer performs only a single regex pass, an attacker can construct payloads like `<<user_email>/user_email>` or `</user_</user_email>email>`. When the inner tag is stripped by the single pass, the surrounding fragments collapse together to form a valid tag that reaches the LLM unsanitized. Iterative processing reapplies the regex until no further substitutions occur, guaranteeing all nested layers are neutralized. The loop is strictly bounded (e.g., 5 iterations) to prevent algorithmic complexity attacks or ReDoS from causing infinite execution loops.
+
+---
+
+### Q38: Why use regex entity extraction for order IDs and email addresses before invoking an LLM in the support agent loop?
+**Answer:**
+Deterministic regex parsing guarantees 100% precision, zero hallucination, zero token cost, and sub-millisecond execution time. It enables fail-fast validation: if an order ID is missing from an email whose intent requires one, the agent can escalate immediately or request clarification (`INFORMATION_MISSING`) without wasting expensive LLM inference turns or exposing upstream ERP APIs to unvalidated queries.
+
+---
+
+### Q39: Why is negative lookaround `(?<![A-Za-z0-9])` and `(?![A-Za-z0-9-])` preferable to `\b` for order ID matching?
+**Answer:**
+In regex syntax, `\b` matches a boundary between `\w` (alphanumeric and underscore) and `\W` (all other characters). Because the hyphen `-` is a `\W` character, `\b` treats the position after a digit and before a hyphen as a word boundary. Consequently, a string like `CMD-10045-A` or `CMD-10045-REVISED` would falsely match `CMD-10045`. Explicit lookaround assertions ensure that neither an alphanumeric prefix (`ACMD-10045`) nor a hyphenated/digit suffix (`CMD-10045-A` or 9-digit `CMD-100456789`) can trigger a partial match.
+
+---
+
+### Q40: How does canonical normalization in `extract_order_id` and `extract_email` defend against authorization and schema failures?
+**Answer:**
+Inbound customer text contains arbitrary casing (e.g. `cmd-10045`, `ALICE@EXAMPLE.COM`). Downstream Pydantic models (`ExtractedDemand`) enforce a strict regex pattern `^CMD-[0-9]{5,8}$` that rejects lowercase prefixes, while the PII access controller relies on string equality between sender email and database records. Normalizing order IDs to uppercase and emails to lowercase at extraction ensures boundary contracts are satisfied without requiring defensive lowercasing or uppercasing throughout the entire codebase.
+
+---
+
+### Q41: Why must the exception message in `SecurityAccessError` remain opaque and omit the order owner's email address?
+**Answer:**
+In multi-tenant and public support systems, disclosing the registered owner's email in an unauthorized access error enables account harvesting and enumeration attacks. An adversary could submit arbitrary order IDs to discover the email addresses of existing customers. Omitting order metadata and customer identifiers from the exception message upholds the principle of least privilege and prevents PII leakage while full diagnostics are recorded internally to secure audit logs.
+
+---
+
+### Q42: How does `shield_unauthorized_access` uphold the ReAct agent's "Zero Naked Crash" policy?
+**Answer:**
+If an unauthorized order access attempt raised an uncaught Python exception inside a tool execution thread, it would crash the worker process or terminate the agent session ungracefully. `shield_unauthorized_access` catches or intercepts the mismatch and returns a validated `ToolExecutionResult(success=False, error_code="SECURITY_UNAUTHORIZED_ACCESS")`. This allows the agent's Finite State Machine (FSM) to cleanly observe the security denial and transition the session to `REQUIRES_HUMAN` review without runtime crashing.
+
+---
+
+### Q43: What is the risk of performing direct string comparison (`sender == owner`) without canonical normalization in access control?
+**Answer:**
+Email addresses are functionally case-insensitive and users frequently submit addresses with varied casing (e.g., `Alice@Example.com` vs `alice@example.com`) or whitespace from form inputs or copy-pasting. Direct string comparison would result in false-negative rejections of legitimate customers, causing unnecessary ticket escalations and degraded customer experience. Canonical normalization ensures consistent, deterministic identity verification.
+
+---
+
+### Q44: Why must inquiries missing an order ID be short-circuited to INFORMATION_MISSING during pre-extraction rather than within the LLM agent loop?
+**Answer:**
+Downstream domain tools (`get_order_details`, `calculate_refund_eligibility`, `calculate_delivery_delay`) require a syntactically valid order identifier (`CMD-[0-9]{5,8}`) to execute. If an inquiry lacks this identifier, any tool invocation would immediately fail or cause LLM hallucination of dummy order codes. Short-circuiting to `INFORMATION_MISSING` at the pre-extraction layer satisfies TC-05 with zero tool invocations, saves unnecessary LLM token generation costs, and immediately requests required clarification from the customer.
+
+---
+
+### Q45: How does the pre-extraction engine satisfy test case TC-11 (hostile legal threats / litigation notices) with zero tool calls?
+**Answer:**
+`PreExtractionClassifier` scans the scrubbed customer message using compiled regex patterns matching legal actions (attorney, lawsuit, court, litigation, small claims), regulatory threats (GDPR fines, consumer protection, trading standards), chargebacks, and abusive hostility. When detected, the engine flags `is_legal_threat_or_aggressive=True` and sets `intent=IntentEnum.OUT_OF_SCOPE`. This prevents the ReAct controller from dispatching automated tools and directly escalates the session to human legal counsel.
+
+---
+
+### Q46: How does functional intent family grouping distinguish between detailed single inquiries and compound MIXED_QUERY requests?
+**Answer:**
+Inbound queries often combine logistics synonyms within a single question (e.g., 'Where is my order CMD-10001? It is 3 days late.'). Both `ORDER_STATUS` and `DELIVERY_DELAY` match, but because they belong to the same 'Logistics' family, the classifier resolves the inquiry to the more specific `DELIVERY_DELAY` intent without triggering multi-query handling. Only when queries span distinct families (e.g. Logistics + Refund, or Refund + Invoice) or reference multiple order IDs does the engine classify the demand as `MIXED_QUERY` and decompose the text into sub-queries.
+
+---
+
+### Q47: Why are search targets composed from both email subject and body during entity extraction?
+**Answer:**
+Customers frequently place critical identifiers in the email subject line (e.g., subject: 'Status update for CMD-10001', body: 'When will this arrive?'). If entity extraction only inspected the email body, the order ID would be missed and the inquiry erroneously flagged as `INFORMATION_MISSING`. Concatenating subject and body into a sanitized composite string ensures all identifiers and contextual cues are parsed accurately.
+
+
+

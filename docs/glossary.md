@@ -249,3 +249,54 @@ The iterative application of tag removal rules until the payload reaches a stead
 
 ### Passive Input Framing
 A core architectural constraint instructing the LLM that content inside specified XML tags must be treated strictly as passive semantic information rather than executable commands or operational authority.
+
+### Regex Entity Extraction
+Deterministic pre-LLM parsing technique using regular expressions to extract structured business entities (order identifiers, email addresses) from unstructured text with zero latency and zero hallucination risk.
+
+### Lookaround Boundary Guard
+Regular expression technique using negative lookbehind (`(?<!...)`) and lookahead (`(?!...)`) assertions to prevent accidental partial matches inside longer tokens or hyphenated compound words.
+
+### Canonical Entity Normalization
+The transformation of extracted entity representations into a standard canonical form (e.g. uppercase order codes, lowercase RFC email addresses) at the ingestion boundary.
+
+### ExtractedEntities DTO
+An immutable Pydantic transfer object holding parsed order identifiers and customer email addresses, maintaining both primary single-value fields and complete tuple collections.
+
+### Strict Format Verification Predicate
+Boolean validator function (`is_valid_order_id`, `is_valid_email`) asserting that an entire candidate string strictly matches a domain specification from start to end (`^...$`).
+
+### PII Access Control Guard
+A defensive security boundary module enforcing strict cross-authorization by verifying that the authenticated sender's identity matches the customer record associated with a queried entity.
+
+### Fail-Closed Metadata Containment
+A security design principle ensuring that when an authorization check fails, the system terminates access immediately and withholds all entity metadata, customer identities, or state details from the response.
+
+### Cross-Authorization Verification
+The validation that an authenticated user possesses explicit ownership or authorized access rights to an individual entity (e.g. order) rather than merely possessing a valid user account.
+
+### Tool Execution Shielding
+An architectural pattern where security violations or execution failures within tools return a structured, machine-readable result payload (`ToolExecutionResult(success=False, error_code=...)`) rather than crashing the calling agent loop with an unhandled exception.
+
+### Opaque Security Error
+A sanitized error response that communicates access rejection without revealing internal system state, owner identities, or whether a queried entity even exists.
+
+### Pre-Flight Intent Classification
+Deterministic parsing and categorization of inbound customer communications prior to invoking LLM reasoning loops or external tool interfaces.
+
+### Missing Information Short-Circuiting
+A defensive pattern classifying an inquiry as `INFORMATION_MISSING` when required identifiers (such as `order_id`) are absent, halting tool execution immediately.
+
+### Hostile Legal Threat Escort
+Security guard mechanism flagging litigation threats, legal notices, and aggressive hostility (`is_legal_threat_or_aggressive=True`) to route inquiries directly to human counsel without tool calls.
+
+### Intent Family Grouping
+The architectural organization of granular intents into domain clusters (Logistics, Refunds, Documentation) to evaluate query complexity and discern true `MIXED_QUERY` occurrences.
+
+### Sub-Query Decomposition
+The process of splitting multi-intent inquiries into isolated, ordered sub-queries preserved in an immutable tuple for structured downstream resolution.
+
+### Zero-Tool Pre-Extraction Gate
+A security and performance guardrail preventing unserviceable, out-of-scope, or incomplete customer inquiries from executing downstream backend or agent tools.
+
+
+

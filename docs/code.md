@@ -16,7 +16,7 @@
   - **`base.py`:** `BaseDTO` enforcing immutability and zero payload field drift.
   - **`enums.py`:** Domain enumerations (`OrderStatusEnum`, `IntentEnum`, `RefundReasonCode`).
   - **`email.py`:** `InboundEmailMessage` with email syntax validation.
-  - **`extraction.py`:** `ExtractedDemand` entity with regex order validation.
+  - **`extraction.py`:** `ExtractedDemand` and `ExtractedEntities` entities with regex validation and boundary schemas.
   - **`tools.py`:** Standardized execution payloads (`OrderDetailsResult`, `ToolExecutionResult`).
   - **`response.py`:** Certified agent response contract (`AgentFinalResponse`).
 - **`domain/`:** Pure deterministic business rules:
@@ -28,7 +28,7 @@
   - **`state.py`:** Session state and trajectory models.
 - **`security/`:** Defense-in-depth and isolation:
   - **`sanitizer.py`:** Defensive input sanitization: non-printable control character scrubbing, bidi/format override removal, bounded iterative tag spoofing neutralization (`[TAG_REMOVED]`), `<user_email>` XML boundary encapsulation, regex entity extraction (`extract_order_id`, `extract_email`), and prompt injection detection.
-  - **`access_control.py`:** Cross-authorization email matching to prevent PII leakage.
+  - **`access_control.py`:** PII access control and cross-authorization guard (`AccessControlGuard`): canonical email normalization, boolean authorization checks, fail-closed access assertions, polymorphic record inspection, and tool exception shielding.
 - **`tools/`:** MCP-compliant tool runtime:
   - **`base.py`:** `ToolInterface` protocol with exception shielding wrapper.
   - **`registry.py`:** Tool catalog, schema validator, and MCP specification exporter.
@@ -329,3 +329,140 @@ Return Formatted Payload: "<user_email>\n{sanitized}\n</user_email>"
 2. `scrub_control_characters` purges non-printable C0 and C1 control codes, as well as Unicode bidirectional override and zero-width characters (e.g. U+202E, U+200B, U+FEFF), neutralizing visual spoofing and regex evasion techniques while preserving legitimate formatting whitespace (`\t`, `\n`, `\r`).
 3. `sanitize_tag_spoofing` executes a bounded iterative loop (up to 5 passes) that substitutes all variants of `<user_email>` boundary tags (opening, closing, self-closing, attributes) and spoofed system/instruction delimiters (`<system>`, `<instructions>`, `<developer>`, `<admin>`, etc.) with `[TAG_REMOVED]`. Iterating until fixed-point convergence neutralizes recursive evasion payloads such as `<<user_email>/user_email>`.
 4. The sanitized content is wrapped securely in `<user_email>\n{sanitized}\n</user_email>` before transmission to downstream prompt managers and extraction engines.
+
+### Deterministic Regex Entity Extraction Flow (`src/security/sanitizer.py`)
+```text
+Inbound Text Payload (extract_entities)
+        │
+        ├── Type Validation: isinstance(raw_text, str) ──► FALSE ──► Raise BusinessRuleViolationError
+        └── TRUE
+        │
+        ├──► Order Extraction Branch:
+        │       │
+        │       ▼
+        │    Pattern Search: ORDER_ID_PATTERN ((?<![A-Za-z0-9])CMD-[0-9]{5,8}(?![A-Za-z0-9-]))
+        │       │
+        │       ▼
+        │    Uppercase Normalization & Order-Preserving Set Deduplication
+        │       │
+        │       ▼
+        │    Primary Order ID: orders[0] (or None) | All Order IDs: tuple(orders)
+        │
+        └──► Email Extraction Branch:
+                │
+                ▼
+             Pattern Search: EMAIL_PATTERN (\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)
+                │
+                ▼
+             Lowercase Canonicalization & Order-Preserving Set Deduplication
+                │
+                ▼
+             Primary Customer Email: emails[0] (or None) | All Emails: tuple(emails)
+        │
+        ▼
+Assemble Immutable DTO: ExtractedEntities(order_id, all_order_ids, customer_email, all_emails)
+        │
+        ▼
+Forward to Pre-Extraction Classifier & PII Access Controller
+```
+1. `extract_entities` receives raw inbound customer text and performs fail-fast type verification, raising `BusinessRuleViolationError` with code `INVALID_PAYLOAD_TYPE` on non-string inputs.
+2. In the order extraction branch, `ORDER_ID_PATTERN` executes with negative lookaround boundaries `(?<![A-Za-z0-9])` and `(?![A-Za-z0-9-])`. This eliminates false-positive sub-matches on longer numbers (e.g. 9 digits) or hyphenated suffixes (`CMD-10045-A`) while allowing punctuation and bracket delimiters. All extracted order codes are normalized to uppercase (`.upper()`) and deduplicated while preserving first-appearance order.
+3. In the email extraction branch, `EMAIL_PATTERN` matches RFC 5322-compliant addresses including plus-addressing tags (`user+tag@domain.com`). Extracted addresses are normalized to lowercase (`.lower()`) and deduplicated to guarantee consistent downstream identity comparisons.
+4. Results are assembled into an immutable `ExtractedEntities` DTO (`frozen=True, extra="forbid"`), validating `order_id` against `^CMD-[0-9]{5,8}$` and email syntax via Pydantic `EmailStr`.
+5. The validated DTO is forwarded to pre-extraction intent classifiers and PII access guards, providing zero-latency deterministic entity resolution prior to LLM reasoning loops.
+
+### PII Access Control & Cross-Authorization Flow (`src/security/access_control.py`)
+```text
+Inbound Query (sender_email, order_id)
+        │
+        ▼
+Fetch Target Order Record (data/mock_orders.json / erp_client)
+        │
+        ▼
+Access Verification (AccessControlGuard.verify_order_access / shield_unauthorized_access)
+        │
+        ├── Syntax & Type Normalization (normalize_email)
+        │       ├── Invalid Type / Non-String ──► Raise BusinessRuleViolationError (INVALID_PAYLOAD_TYPE)
+        │       └── Malformed Syntax ──────────► Raise BusinessRuleViolationError (INVALID_EMAIL_SYNTAX)
+        │
+        ├── Identity Comparison: normalized_sender == normalized_owner ?
+        │
+        ├── TRUE (Authorized)
+        │       └── Proceed with Order Details Dispatch (OrderStatusTool / FSM)
+        │
+        └── FALSE (Unauthorized Mismatch)
+                │
+                ├── Structured Logging: logger.warning("security_access_denied", sender, owner)
+                │
+                ├── Direct Domain Call:
+                │       └── Fail Closed ──► Raise SecurityAccessError ("SECURITY_UNAUTHORIZED_ACCESS")
+                │                           (Opaque message: Zero order/owner metadata leaked)
+                │
+                └── Tool Ingress Wrapper (shield_unauthorized_access):
+                        └── Return ToolExecutionResult(success=False, error_code="SECURITY_UNAUTHORIZED_ACCESS")
+                                │
+                                ▼
+                        FSM Transition: ANALYZING ──► REQUIRES_HUMAN (Ticket routed to agent queue)
+```
+1. Inbound customer operations query order metadata supplying an authenticated `sender_email` and an `order_id`. The order record is retrieved from the ERP data layer.
+2. `AccessControlGuard` validates and normalizes both email addresses via `normalize_email`, stripping whitespace, lowercasing, and verifying RFC email syntax. Non-string inputs or empty strings raise `BusinessRuleViolationError` (`INVALID_PAYLOAD_TYPE`), while malformed emails raise `INVALID_EMAIL_SYNTAX`.
+3. If normalized emails match (`normalized_sender == normalized_owner`), access is granted and execution proceeds to domain tool dispatch.
+4. If an email mismatch is detected, the guard immediately fails closed. A security event is logged internally with structured diagnostic metadata (`sender_email`, `order_owner`).
+5. For direct service invocations, `verify_order_access` raises `SecurityAccessError` with standard code `SECURITY_UNAUTHORIZED_ACCESS`. The exception message is strictly sanitized and opaque, withholding the customer's registered email address and order status to block enumeration and harvesting attacks.
+6. For tool runtimes, `shield_unauthorized_access` intercepts the violation and returns a certified `ToolExecutionResult(success=False, error_code="SECURITY_UNAUTHORIZED_ACCESS")`, enabling the ReAct loop and FSM controller to route the session gracefully to human escalation (`REQUIRES_HUMAN`) without runtime crash or data leakage.
+
+### Deterministic Pre-Extraction Intent Classification & Threat Guard (`src/security/pre_extraction.py`)
+```text
+Inbound Message Payload (InboundEmailMessage / raw_text + sender_email)
+        │
+        ├── Payload & Type Verification: InboundEmailMessage / isinstance(text, str)
+        ├── Sender Email Canonicalization: AccessControlGuard.normalize_email(sender_email)
+        └── Text Normalization: scrub_control_characters(subject + "\n" + text)
+        │
+        ├── Entity Extraction:
+        │       ├── order_id: extract_order_id(full_text)
+        │       └── all_order_ids: extract_all_order_ids(full_text)
+        │
+        ├── Security Threat Evaluation: detect_legal_threat_or_hostility(full_text)
+        │       │
+        │       └── TRUE (TC-11: Legal notice, attorney, court, fraud, profanity)
+        │               │
+        │               ▼
+        │            Return ExtractedDemand:
+        │              • intent = IntentEnum.OUT_OF_SCOPE
+        │              • is_legal_threat_or_aggressive = True
+        │              • order_id = order_id (preserved for legal context)
+        │              (Direct escalation to human legal counsel; 0 tool calls)
+        │
+        └── FALSE (Non-hostile)
+                │
+                ├── Intent Detection & Family Grouping:
+                │       ├── Logistics: ORDER_STATUS, DELIVERY_DELAY
+                │       ├── Financial: REFUND_REQUEST
+                │       └── Documentation: ORDER_INFORMATION
+                │
+                ├── Classification Logic:
+                │       ├── Active Families > 1 OR len(all_order_ids) > 1 ──► candidate = MIXED_QUERY
+                │       │                                                       sub_queries = extract_sub_queries(...)
+                │       ├── Single Intent Matched ──────────────────────────► candidate = intents[0]
+                │       ├── Multiple in Same Family ────────────────────────► candidate = DELIVERY_DELAY / ORDER_STATUS
+                │       └── Out of Scope / Unrelated ───────────────────────► candidate = OUT_OF_SCOPE
+                │
+                ├── Missing Information Gate (TC-05):
+                │       ├── candidate in {ORDER_STATUS, DELIVERY_DELAY, REFUND_REQUEST, ORDER_INFORMATION, MIXED_QUERY}
+                │       │   AND order_id is None
+                │       │   │
+                │       │   ▼
+                │       │   intent = IntentEnum.INFORMATION_MISSING (0 tool calls; ask customer for ID)
+                │       │
+                │       └── Otherwise ──► intent = candidate
+                │
+                ▼
+        Return Immutable ExtractedDemand(intent, order_id, customer_email, is_legal_threat, sub_queries)
+```
+1. `PreExtractionClassifier.classify` ingests either an `InboundEmailMessage` or raw text via `classify_text`. Senders' email addresses are canonicalized through `AccessControlGuard.normalize_email` and text is scrubbed of non-printable control characters via `scrub_control_characters`.
+2. Deterministic entity extraction scans the concatenated subject and body for order identifiers using `extract_order_id` and `extract_all_order_ids`.
+3. Hostile threats, attorney representation, small claims notices, fraud allegations, and aggressive profanity are screened using `LEGAL_THREAT_PATTERN`. If detected, the classifier returns an `ExtractedDemand` with `intent = IntentEnum.OUT_OF_SCOPE` and `is_legal_threat_or_aggressive = True` (satisfying TC-11). This forces 0 tool calls and immediately routes the inquiry to the human legal team.
+4. For non-hostile inquiries, intents are grouped into functional families (Logistics, Refunds, Documentation). Requests spanning multiple distinct families or referencing multiple order IDs are classified as `IntentEnum.MIXED_QUERY`, and decomposed into clauses via `extract_sub_queries`.
+5. Crucially, any inquiry requiring an order record (`ORDER_STATUS`, `DELIVERY_DELAY`, `REFUND_REQUEST`, `ORDER_INFORMATION`, `MIXED_QUERY`) that lacks a valid `order_id` is short-circuited to `IntentEnum.INFORMATION_MISSING` (satisfying TC-05). This halts downstream tool invocations before entering the LLM loop and prompts the user for clarification.
+

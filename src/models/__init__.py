@@ -8,7 +8,7 @@ from models.enums import (
     RefundReasonCode,
     ResolutionStatusEnum,
 )
-from models.extraction import ExtractedDemand
+from models.extraction import ExtractedDemand, ExtractedEntities
 from models.response import AgentFinalResponse
 from models.tools import (
     DeliveryDelayResult,
@@ -23,6 +23,7 @@ __all__ = [
     "BaseDTO",
     "DeliveryDelayResult",
     "ExtractedDemand",
+    "ExtractedEntities",
     "InboundEmailMessage",
     "IntentEnum",
     "OrderDetailsResult",

@@ -5,7 +5,16 @@ from pydantic import EmailStr, Field
 from models.base import BaseDTO
 from models.enums import IntentEnum
 
-__all__ = ["ExtractedDemand"]
+__all__ = ["ExtractedDemand", "ExtractedEntities"]
+
+
+class ExtractedEntities(BaseDTO):
+    """Deterministic entities parsed from inbound customer communications."""
+
+    order_id: str | None = Field(default=None, pattern=r"^CMD-[0-9]{5,8}$")
+    all_order_ids: tuple[str, ...] = Field(default_factory=tuple)
+    customer_email: EmailStr | None = None
+    all_emails: tuple[EmailStr, ...] = Field(default_factory=tuple)
 
 
 class ExtractedDemand(BaseDTO):

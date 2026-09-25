@@ -1,13 +1,20 @@
 """Tests verifying input sanitization, XML boundary tagging, and entity parsing."""
 
 import pytest
+from pydantic import ValidationError
 
 from core.exceptions import BusinessRuleViolationError
+from models.extraction import ExtractedEntities
 from security.sanitizer import (
     TAG_REMOVAL_TOKEN,
     detect_prompt_injection,
+    extract_all_emails,
+    extract_all_order_ids,
     extract_email,
+    extract_entities,
     extract_order_id,
+    is_valid_email,
+    is_valid_order_id,
     sanitize_tag_spoofing,
     scrub_control_characters,
     wrap_user_email_payload,
@@ -115,22 +122,126 @@ def test_sanitizer_type_validation_raises_domain_error() -> None:
 
 
 def test_extract_order_id_regex() -> None:
-    """Validate order identifier extraction."""
+    """Validate order identifier extraction and case normalization."""
     text = "Regarding order CMD-10045 received yesterday."
     assert extract_order_id(text) == "CMD-10045"
+    assert extract_order_id("Regarding order cmd-10045 received.") == "CMD-10045"
+    assert extract_order_id("Boundary check CMD-12345 and CMD-12345678") == "CMD-12345"
+    assert extract_order_id("Wrapped in parens (CMD-99999).") == "CMD-99999"
+    assert extract_order_id("Prefixed hash #CMD-88888!") == "CMD-88888"
+
+    # Non-conforming cases
     assert extract_order_id("No order mentioned here.") is None
+    assert extract_order_id("Too short CMD-1234 here.") is None
+    assert extract_order_id("Too long CMD-123456789 here.") is None
+    assert extract_order_id("Attached prefix ACMD-10045.") is None
+    assert extract_order_id("Attached suffix CMD-10045Z.") is None
+    assert extract_order_id("Hyphen suffix CMD-10045-A.") is None
 
     with pytest.raises(BusinessRuleViolationError):
         extract_order_id(None)  # type: ignore[arg-type]
 
 
+def test_extract_all_order_ids() -> None:
+    """Validate multiple order ID extraction and deduplication."""
+    text = "Orders CMD-10045 and cmd-20050 followed by duplicate CMD-10045."
+    extracted = extract_all_order_ids(text)
+    assert extracted == ["CMD-10045", "CMD-20050"]
+    assert extract_all_order_ids("No orders here.") == []
+
+    with pytest.raises(BusinessRuleViolationError):
+        extract_all_order_ids(123)  # type: ignore[arg-type]
+
+
+def test_is_valid_order_id() -> None:
+    """Validate strict order ID format predicate."""
+    assert is_valid_order_id("CMD-10001") is True
+    assert is_valid_order_id("CMD-12345678") is True
+    assert is_valid_order_id("  CMD-10001  ") is True
+
+    assert is_valid_order_id("cmd-10001") is False
+    assert is_valid_order_id("CMD-1234") is False
+    assert is_valid_order_id("CMD-123456789") is False
+    assert is_valid_order_id("ORDER-10001") is False
+    assert is_valid_order_id("") is False
+
+    with pytest.raises(BusinessRuleViolationError):
+        is_valid_order_id(None)  # type: ignore[arg-type]
+
+
 def test_extract_email_regex() -> None:
-    """Validate email address extraction."""
+    """Validate email address extraction and lowercasing."""
     text = "Contact me at alice.support@domain.co.uk please."
     assert extract_email(text) == "alice.support@domain.co.uk"
 
+    uppercase = "Send updates to ALICE.DOE@DOMAIN.COM immediately."
+    assert extract_email(uppercase) == "alice.doe@domain.com"
+
+    plus_email = "Filter to user+tag@example.org thanks."
+    assert extract_email(plus_email) == "user+tag@example.org"
+
+    wrapped = "Email: <customer@shop.fr> or (customer2@shop.fr)."
+    assert extract_email(wrapped) == "customer@shop.fr"
+
+    assert extract_email("No email here.") is None
+    assert extract_email("Invalid user@ or @domain.com") is None
+
     with pytest.raises(BusinessRuleViolationError):
         extract_email(123)  # type: ignore[arg-type]
+
+
+def test_extract_all_emails() -> None:
+    """Validate multiple email address extraction and deduplication."""
+    text = "From Alice@Domain.Com and bob@domain.org, cc alice@domain.com."
+    assert extract_all_emails(text) == ["alice@domain.com", "bob@domain.org"]
+    assert extract_all_emails("No emails here.") == []
+
+    with pytest.raises(BusinessRuleViolationError):
+        extract_all_emails(None)  # type: ignore[arg-type]
+
+
+def test_is_valid_email() -> None:
+    """Validate strict email address format predicate."""
+    assert is_valid_email("alice@domain.com") is True
+    assert is_valid_email("user+tag@sub.domain.co.uk") is True
+    assert is_valid_email("  alice@domain.com  ") is True
+
+    assert is_valid_email("notanemail") is False
+    assert is_valid_email("user@") is False
+    assert is_valid_email("@domain.com") is False
+    assert is_valid_email("user@.com") is False
+    assert is_valid_email("") is False
+
+    with pytest.raises(BusinessRuleViolationError):
+        is_valid_email(None)  # type: ignore[arg-type]
+
+
+def test_extract_entities_dto() -> None:
+    """Validate comprehensive entity extraction into ExtractedEntities DTO."""
+    text = (
+        "Hello support, I have order cmd-10045 and CMD-20050. "
+        "Reach me at Alice@Domain.com or bob@other.org."
+    )
+    entities = extract_entities(text)
+    assert isinstance(entities, ExtractedEntities)
+    assert entities.order_id == "CMD-10045"
+    assert entities.all_order_ids == ("CMD-10045", "CMD-20050")
+    assert entities.customer_email == "alice@domain.com"
+    assert entities.all_emails == ("alice@domain.com", "bob@other.org")
+
+    # Immutability
+    with pytest.raises(ValidationError):
+        entities.order_id = "CMD-99999"
+
+    # Empty payload
+    empty_entities = extract_entities("Just asking a general question.")
+    assert empty_entities.order_id is None
+    assert empty_entities.all_order_ids == ()
+    assert empty_entities.customer_email is None
+    assert empty_entities.all_emails == ()
+
+    with pytest.raises(BusinessRuleViolationError):
+        extract_entities(None)  # type: ignore[arg-type]
 
 
 def test_detect_prompt_injection() -> None:
