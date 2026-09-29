@@ -30,7 +30,7 @@
   - **`sanitizer.py`:** Defensive input sanitization: non-printable control character scrubbing, bidi/format override removal, bounded iterative tag spoofing neutralization (`[TAG_REMOVED]`), `<user_email>` XML boundary encapsulation, regex entity extraction (`extract_order_id`, `extract_email`), and prompt injection detection.
   - **`access_control.py`:** PII access control and cross-authorization guard (`AccessControlGuard`): canonical email normalization, boolean authorization checks, fail-closed access assertions, polymorphic record inspection, and tool exception shielding.
 - **`tools/`:** MCP-compliant tool runtime:
-  - **`base.py`:** `ToolInterface` protocol with exception shielding wrapper.
+  - **`base.py`:** `ToolInterface` protocol, `BaseTool` abstract base class, `execute_shielded` exception-shielding engine, and `@shield_tool_execution` decorator.
   - **`registry.py`:** Tool catalog, schema validator, and MCP specification exporter.
   - **`order_status.py` / `refund_calculator.py` / `delay_calculator.py`:** Concrete domain tools.
 - **`clients/`:** Upstream client adapters:
@@ -465,4 +465,210 @@ Inbound Message Payload (InboundEmailMessage / raw_text + sender_email)
 3. Hostile threats, attorney representation, small claims notices, fraud allegations, and aggressive profanity are screened using `LEGAL_THREAT_PATTERN`. If detected, the classifier returns an `ExtractedDemand` with `intent = IntentEnum.OUT_OF_SCOPE` and `is_legal_threat_or_aggressive = True` (satisfying TC-11). This forces 0 tool calls and immediately routes the inquiry to the human legal team.
 4. For non-hostile inquiries, intents are grouped into functional families (Logistics, Refunds, Documentation). Requests spanning multiple distinct families or referencing multiple order IDs are classified as `IntentEnum.MIXED_QUERY`, and decomposed into clauses via `extract_sub_queries`.
 5. Crucially, any inquiry requiring an order record (`ORDER_STATUS`, `DELIVERY_DELAY`, `REFUND_REQUEST`, `ORDER_INFORMATION`, `MIXED_QUERY`) that lacks a valid `order_id` is short-circuited to `IntentEnum.INFORMATION_MISSING` (satisfying TC-05). This halts downstream tool invocations before entering the LLM loop and prompts the user for clarification.
+
+### Tool Protocol, Abstract Base & Shielded Execution Runtime (`src/tools/base.py`)
+```text
+Tool Invocation: BaseTool.execute(**kwargs) / @shield_tool_execution
+        │
+        ▼
+execute_shielded(func, tool_name, args_schema, **kwargs)
+        │
+        ├── Step 1: Input Schema Validation
+        │       ├── args_schema is not None ──► validated = args_schema.model_validate(kwargs)
+        │       │                               call_kwargs = validated.model_dump()
+        │       │                               (Enforces frozen=True, extra="forbid", and default values)
+        │       │
+        │       └── ValidationError caught ──► Return ToolExecutionResult(
+        │                                         success=False,
+        │                                         tool_name=tool_name,
+        │                                         error_code="INVALID_ARGUMENTS",
+        │                                         error_message=str(val_err)
+        │                                      )
+        │
+        ├── Step 2: Core Logic Dispatch
+        │       └── res = func(**call_kwargs) (supports coroutines & synchronous callables)
+        │
+        ├── Step 3: Payload Normalization
+        │       ├── ToolExecutionResult ──► Pass through unchanged
+        │       ├── BaseModel / BaseDTO ──► Return ToolExecutionResult(success=True, data=res.model_dump())
+        │       ├── dict                ──► Return ToolExecutionResult(success=True, data=dict)
+        │       ├── None                ──► Return ToolExecutionResult(success=True, data=None)
+        │       └── primitive / list    ──► Return ToolExecutionResult(success=True, data={"result": res})
+        │
+        └── Step 4: Absolute Exception Shielding ("Zero Naked Crash")
+                ├── SupportAgentBaseError caught ──► Return ToolExecutionResult(
+                │                                       success=False,
+                │                                       tool_name=tool_name,
+                │                                       error_code=err.error_code,
+                │                                       error_message=err.message
+                │                                    )
+                │
+                └── Generic Exception caught    ──► Structured JSON Log (logger.error)
+                                                    Return ToolExecutionResult(
+                                                       success=False,
+                                                       tool_name=tool_name,
+                                                       error_code="TOOL_EXECUTION_ERROR",
+                                                       error_message="Unhandled tool failure: ..."
+                                                    )
+```
+1. `BaseTool.execute` acts as the Template Method entrypoint delegating to `execute_shielded`, passing `self._run`, `self.name`, `self.args_schema`, and raw `kwargs`.
+2. `execute_shielded` deserializes and schema-validates `kwargs` via `args_schema.model_validate(kwargs)`. Any schema violation or prohibited extra attribute raises Pydantic's `ValidationError`, which is intercepted and mapped to `ToolExecutionResult(success=False, error_code="INVALID_ARGUMENTS")`.
+3. Validated arguments are unpacked via `**validated.model_dump()` into `func`, populating model default values and keeping domain code clean of manual deserialization logic. Both coroutine functions and sync callables are transparently supported.
+4. If execution succeeds, return values are normalized into `ToolExecutionResult`: Pydantic models are converted via `.model_dump()`, dictionaries are stored in `data`, and empty results return `data=None`.
+5. If a domain exception inheriting from `SupportAgentBaseError` (`AppBaseError`) occurs (e.g. `OrderNotFoundError`, `SecurityAccessError`, `BusinessRuleViolationError`), the exact domain `error_code` and message are shielded into `ToolExecutionResult`. Any unexpected third-party runtime failure is logged via `structlog` and shielded into `error_code="TOOL_EXECUTION_ERROR"`. Raw exceptions never escape to crash the ReAct loop.
+6. The `@shield_tool_execution` decorator inspects `self` or function attributes to dynamically resolve `tool_name` and `args_schema`, providing identical shielding capabilities for standalone functions and methods.
+7. `BaseTool.get_mcp_spec` dynamically generates Model Context Protocol (MCP) tool catalog entries containing the tool's name, description, and JSON Schema parameters directly from Pydantic models.
+
+### Concrete Domain Tool Implementations (`src/tools/order_status.py`, `refund_calculator.py`, `delay_calculator.py`)
+```text
+1. Order Status Tool (OrderStatusTool):
+   Inbound Tool Call (order_id, customer_email)
+           │
+           ▼
+   BaseTool.execute() ──► OrderStatusArgs.model_validate(kwargs)
+           │
+           ▼
+   OrderStatusTool._run(order_id, customer_email)
+           │
+           ├── erp_client.get_order_by_id_async(order_id)
+           │       └── OrderNotFoundError ──► Shielded: ToolExecutionResult(error_code="ORDER_NOT_FOUND")
+           │       └── CircuitBreakerError ──► Shielded: ToolExecutionResult(error_code="CIRCUIT_BREAKER_TRIPPED")
+           │
+           ├── AccessControlGuard.verify_order_record_access(customer_email, order_record)
+           │       └── SecurityAccessError ──► Shielded: ToolExecutionResult(error_code="SECURITY_UNAUTHORIZED_ACCESS")
+           │
+           └── Return OrderDetailsResult(...) ──► Normalized to ToolExecutionResult(success=True, data=...)
+
+2. Refund Calculator Tool (RefundCalculatorTool):
+   Inbound Tool Call (delivery_date, request_date, item_prices_cents, shipping_fee_cents, is_express, delay_days)
+           │
+           ▼
+   BaseTool.execute() ──► RefundCalculatorArgs.model_validate(kwargs)
+           │
+           ▼
+   RefundCalculatorTool._run(...)
+           │
+           ├── Pure Function: calculate_statutory_withdrawal(...)
+           │       ├── Check 14-day calendar window: (request_date - delivery_date).days <= 14
+           │       └── Express delay compensation: delay_days > 5 & is_express ──► 100% shipping fee voucher
+           │
+           └── Return RefundEligibilityResult(...) ──► Normalized to ToolExecutionResult(success=True, data=...)
+
+3. Delay Calculator Tool (DelayCalculatorTool):
+   Inbound Tool Call (estimated_delivery_date, reference_date, is_express, shipping_fee_cents)
+           │
+           ▼
+   BaseTool.execute() ──► DelayCalculatorArgs.model_validate(kwargs)
+           │
+           ▼
+   DelayCalculatorTool._run(...)
+           │
+           ├── Pure Function: calculate_shipping_delay(estimated_delivery_date, reference_date)
+           └── Pure Function: calculate_express_compensation(delay_days, is_express, shipping_fee_cents)
+           │
+           └── Return {"delay_days": ..., "is_delayed": ..., "voucher_compensation_cents": ...}
+```
+1. `OrderStatusTool._run` coordinates asynchronous ERP order queries and PII access control. When invoked with `order_id` and `customer_email`, it fetches the record via `self.erp_client.get_order_by_id_async(order_id)`. Missing orders raise `OrderNotFoundError` which is shielded by `BaseTool` into `error_code="ORDER_NOT_FOUND"`. Upstream ERP dropouts raise `CircuitBreakerError` after retry exhaustion, shielded into `error_code="CIRCUIT_BREAKER_TRIPPED"`.
+2. Cross-authorization is verified via `AccessControlGuard.verify_order_record_access(sender_email=customer_email, order_record=order_record)`. If the email fails to match, a `SecurityAccessError` is raised and shielded into `error_code="SECURITY_UNAUTHORIZED_ACCESS"`, failing closed and withholding internal order data.
+3. Upon successful authorization, `OrderStatusTool` constructs and returns an immutable `OrderDetailsResult` domain DTO, which `BaseTool.execute` automatically converts into a dictionary payload for `ToolExecutionResult.data`.
+4. `RefundCalculatorTool._run` implements statutory cooling-off evaluations under EU Directive 2011/83/EU. It invokes `calculate_statutory_withdrawal` to determine whether the customer's request falls within the 14-day calendar window, returning an immutable `RefundEligibilityResult` with refundable item totals and reason codes (`WITHIN_LEGAL_TIMEFRAME`, `TIMEFRAME_EXCEEDED`, or `NOT_DELIVERED_YET`).
+5. `DelayCalculatorTool._run` measures delivery drift in calendar days via `calculate_shipping_delay` and computes commercial express vouchers via `calculate_express_compensation`. Express deliveries delayed by more than 5 calendar days receive a 100% shipping fee compensation voucher.
+
+### Tool Registry & Dynamic Schema Exporters (`src/tools/registry.py`)
+```text
+Agent Orchestrator / ReAct FSM Loop
+        │
+        ├── Discovery & Specification:
+        │       ├── registry.get_mcp_specs() ──► [{"name", "description", "parameters": json_schema}, ...]
+        │       └── registry.get_openai_tools() ──► [{"type": "function", "function": {...}}, ...]
+        │
+        ├── Pre-Flight Argument Validation:
+        │       └── registry.validate_tool_arguments(tool_name, **kwargs)
+        │               ├── Unknown Tool ────────► Raise ToolExecutionError ("Tool not registered")
+        │               ├── Invalid Schema ──────► Raise ValidationError (Pydantic failure)
+        │               └── Valid Model ─────────► Return Validated Pydantic DTO (for cache key hashing)
+        │
+        └── Shielded Execution Dispatch:
+                └── registry.execute(tool_name, **kwargs)
+                        │
+                        ├── Tool Lookup Check (has_tool)
+                        │       └── FALSE ──► Return ToolExecutionResult(success=False, error_code="TOOL_NOT_FOUND")
+                        │
+                        ├── Dispatch to tool.execute(**kwargs)
+                        │       ├── Domain Error (SupportAgentBaseError)
+                        │       │       └── Shielded: ToolExecutionResult(success=False, error_code=err.error_code)
+                        │       │
+                        │       ├── Unexpected Fault (Exception)
+                        │       │       └── Logged & Shielded: ToolExecutionResult(success=False, error_code="UNHANDLED_TOOL_FAULT")
+                        │       │
+                        │       └── Success
+                        │               └── Return ToolExecutionResult(success=True, data=..., metrics=...)
+```
+1. `ToolRegistry` acts as the single-point catalog and dispatch coordinator for all agent tools. It implements Python collection protocols (`__contains__`, `__len__`), allowing clean `if "get_order_details" in registry:` inspection.
+2. Dynamic registration via `register(tool)` enforces contract boundary checks at initialization: incoming tools must conform to `@runtime_checkable` `ToolInterface`, have non-empty names, and provide an `args_schema` that is a subclass of Pydantic `BaseModel`. Violations immediately raise `BusinessRuleViolationError` with specific error codes (`INVALID_TOOL_PROTOCOL` or `INVALID_TOOL_METADATA`).
+3. Schema export methods (`get_mcp_specs()`, `get_mcp_spec()`, and `get_openai_tools()`) generate standardized Model Context Protocol (MCP) and OpenAI Function Calling definitions dynamically from each tool's Pydantic `model_json_schema()`, eliminating schema duplication and drift.
+4. `validate_tool_arguments(tool_name, **kwargs)` performs pre-flight validation against the registered tool's Pydantic schema without executing the tool. This decouples validation from execution, enabling upstream layers (such as the idempotency cache) to validate parameters and construct deterministic cache keys before invoking backend services.
+5. `execute(tool_name, **kwargs)` provides full exception shielding. Invocations of unregistered tools return `error_code="TOOL_NOT_FOUND"`, domain exceptions return their respective domain error code, and unexpected runtime exceptions are logged via structured logging and returned with `error_code="UNHANDLED_TOOL_FAULT"`, safeguarding the ReAct loop from crashing.
+6. The `create_default_registry(erp_client)` factory assembles the standard operational tool suite (`OrderStatusTool`, `RefundCalculatorTool`, `DelayCalculatorTool`), accepting an optional `MockERPClient` dependency injection for test and production environments.
+
+### Tool Execution Idempotency Caching Flow (`src/persistence/cache.py`, `src/tools/registry.py`)
+```text
+Inbound Tool Execution Request (tool_name, session_id, **kwargs)
+        │
+        ▼
+ToolRegistry.execute(tool_name, session_id, **kwargs)
+        │
+        ├── 1. Registry Tool Lookup: has_tool(tool_name)?
+        │       └── FALSE ──► Return ToolExecutionResult(error_code="TOOL_NOT_FOUND")
+        │
+        ├── 2. Cache Key Derivation: session_id provided & cache active?
+        │       ├── NO ──► Skip caching, proceed to direct execution
+        │       └── YES
+        │           │
+        │           ▼
+        │       IdempotencyCache.compute_key(session_id, tool_name, kwargs)
+        │           │ ── Normalize primitives & ISO-8601 datetimes (_json_serializer)
+        │           │ ── Canonical JSON serialization: json.dumps(kwargs, sort_keys=True)
+        │           │ ── Derive SHA-256 Digest: SHA256(f"{session_id}:{tool_name}:{normalized_args}")
+        │           │
+        │           ▼
+        │       IdempotencyCache.get_result_async(cache_key)
+        │           │
+        │           ├── Try Primary Redis Store (L2):
+        │           │       └── GET idempotency:<hash> (timeout 0.2s)
+        │           │               ├── HIT ──► ToolExecutionResult.model_validate_json(payload)
+        │           │               └── Connection Error ──► Log warning & Fallback
+        │           │
+        │           └── Check Local Memory Store (L1 Fallback):
+        │                   └── entry = _in_memory_store[hash]
+        │                           ├── Active (now <= expires_at) ──► Return deserialized result
+        │                           └── Stale (now > expires_at) ──► Evict key & Return None
+        │
+        ├── 3. Cache HIT:
+        │       └── Return cached ToolExecutionResult instantly (Zero ERP/LLM I/O)
+        │
+        └── 4. Cache MISS:
+                │
+                ▼
+            tool.execute(**kwargs) ──► Shielded execution
+                │
+                ├── Execution Succeeded (result.success is True)?
+                │       ├── YES ──► IdempotencyCache.set_result_async(cache_key, result)
+                │       │             ├── Redis: SET idempotency:<hash> payload EX 900 NX
+                │       │             └── Memory: _in_memory_store[hash] = (payload, now + 900)
+                │       └── NO  ──► Skip caching (allows immediate retries for transient faults)
+                │
+                ▼
+            Return ToolExecutionResult
+```
+1. `IdempotencyCache.compute_key` enforces deterministic argument hashing by running `json.dumps(arguments, sort_keys=True, default=_json_serializer)`. Datetimes, dates, and nested Pydantic models are normalized to ISO-8601 strings and JSON dictionaries, preventing serialization failures and ensuring dictionary key order independence.
+2. The derived SHA-256 hash digest binds three critical dimensions: `session_id` (guaranteeing tenant and conversational isolation), `tool_name` (scoping by operation), and normalized arguments.
+3. Two-tier caching provides resilience: `IdempotencyCache` lazily probes the configured Redis cluster at `settings.redis_url` with strict 0.2s connection and socket timeouts. If Redis is down, unreachable, or in local/test mode, the cache falls back seamlessly to an in-memory dictionary (`_in_memory_store`) without raising exceptions.
+4. Active TTL management enforces 15-minute expiration (900 seconds). In Redis, this is implemented using native `EX 900` flags with `NX=True` (set-if-not-exists) for distributed atomicity. In the in-memory fallback, each item is stored as a `(payload, expires_at_timestamp)` tuple; expired items are pruned lazily on access.
+5. `ToolRegistry.execute` intercepts execution requests when an optional `session_id` is supplied. It checks the cache before calling `tool.execute()`. On cache hits, it immediately returns the cached `ToolExecutionResult`, saving external API calls, latency, and FinOps token costs.
+6. Caching is strictly confined to successful outcomes (`result.success is True`). Transient network errors, rate limits, or authorization rejections are never cached, enabling callers to retry without waiting for TTL expiration.
+
+
+
+
 

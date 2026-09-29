@@ -119,16 +119,16 @@ Unit tests in `tests/unit/test_schemas.py` confirm model immutability, extra fie
 **Dependencies:** Phase 3, Phase 4.  
 **Deliverables:** MCP-compatible `ToolInterface`, dynamic tool registry, tool adapters with exception shielding, Redis idempotency caching.
 
-- [ ] **Step 5.1: Tool Protocol & Abstract Base:**
+- [x] **Step 5.1: Tool Protocol & Abstract Base:**
   - Define `ToolInterface` protocol in `src/tools/base.py` declaring `name`, `description`, `args_schema`, and `execute()`.
   - Implement execution wrapper shielding raw exceptions and returning `ToolExecutionResult`.
-- [ ] **Step 5.2: Tool Implementations:**
+- [x] **Step 5.2: Tool Implementations:**
   - Implement `OrderStatusTool` (`get_order_details`) in `src/tools/order_status.py`.
   - Implement `RefundCalculatorTool` (`calculate_refund_eligibility`) in `src/tools/refund_calculator.py`.
   - Implement `DelayCalculatorTool` (`calculate_delivery_delay`) in `src/tools/delay_calculator.py`.
-- [ ] **Step 5.3: Tool Registry & Schema Exporter:**
+- [x] **Step 5.3: Tool Registry & Schema Exporter:**
   - Implement `src/tools/registry.py` for tool discovery, validation against Pydantic models, and MCP tool specification export.
-- [ ] **Step 5.4: Tool Execution Idempotency Caching:**
+- [x] **Step 5.4: Tool Execution Idempotency Caching:**
   - Implement idempotency hashing: `SHA256(session_id + tool_name + sorted_args)` stored in Redis (15-minute TTL) to prevent duplicate execution during active sessions.
 
 **Verification Checkpoint:**  

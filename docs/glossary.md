@@ -298,5 +298,57 @@ The process of splitting multi-intent inquiries into isolated, ordered sub-queri
 ### Zero-Tool Pre-Extraction Gate
 A security and performance guardrail preventing unserviceable, out-of-scope, or incomplete customer inquiries from executing downstream backend or agent tools.
 
+### ToolInterface
+Runtime-checkable Protocol defining the structural contract (`name`, `description`, `args_schema`, `execute`) required for ReAct agent loop integration and Model Context Protocol (MCP) tool execution.
+
+### BaseTool
+Abstract base class implementing `ToolInterface` that standardizes argument validation against Pydantic schemas, MCP schema generation, and exception shielding via the Template Method pattern.
+
+### execute_shielded
+Core asynchronous execution engine that executes a tool callable, validates arguments, intercepts exceptions, and normalizes payloads into `ToolExecutionResult` without leaking unhandled exceptions.
+
+### shield_tool_execution
+Decorator providing automated instance attribute binding (`name`, `args_schema`), parameter validation, and exception containment for async and sync tool callables.
+
+### OrderStatusTool
+Concrete domain tool adapter (`get_order_details`) integrating ERP lookup and PII cross-authorization verification to return standardized `OrderDetailsResult`.
+
+### RefundCalculatorTool
+Deterministic domain tool adapter (`calculate_refund_eligibility`) computing statutory 14-day cooling-off returns and delay voucher amounts.
+
+### DelayCalculatorTool
+Logistics drift tool adapter (`calculate_delivery_delay`) measuring delivery latency in calendar days and evaluating express voucher eligibility.
+
+### PII Cross-Authorization Check
+In-tool security verification ensuring that the caller email strictly matches the registered order customer email before returning order details.
+
+### Tool Registry
+A centralized lifecycle catalog and dispatch coordinator that maintains registered tool instances conforming to `ToolInterface`, provides pre-flight schema validation, shields execution exceptions, and dynamically exports schemas for LLM tool calling.
+
+### Model Context Protocol (MCP) Tool Spec
+A standardized machine-readable JSON schema defining a tool's name, description, and input parameters conforming to Anthropic's Model Context Protocol specification for tool integration.
+
+### Pre-Flight Schema Validation
+The practice of validating candidate tool invocation arguments against a tool's Pydantic schema prior to dispatching execution, ensuring early failure detection and providing normalized inputs for idempotency key hashing.
+
+### Default Tool Catalog Factory
+A factory function (`create_default_registry`) that constructs and initializes a `ToolRegistry` pre-populated with operational tools (`OrderStatusTool`, `RefundCalculatorTool`, `DelayCalculatorTool`) configured with production or mock dependencies.
+
+### Tool Execution Idempotency Caching
+A performance and cost-optimization pattern that computes a deterministic SHA-256 hash of the session ID, tool name, and sorted arguments to return cached `ToolExecutionResult` payloads on duplicate calls within a 15-minute TTL window.
+
+### Deterministic Argument Hashing
+The process of normalizing arbitrary tool keyword arguments into a canonical, alphabetically sorted JSON string with ISO 8601-formatted timestamps prior to cryptographic SHA-256 digest computation.
+
+### Two-Tier Cache Degradation
+A fault-tolerant caching pattern where data operations prioritize an external distributed Redis cluster but transparently fall back to a local in-memory store if Redis encounters connection or timeout errors.
+
+### Session-Scoped Idempotency Guard
+An architectural isolation boundary ensuring tool caching keys are bound to a specific user conversation or session ID, preventing cross-tenant and cross-customer data leakage during agent reasoning loops.
+
+
+
+
+
 
 

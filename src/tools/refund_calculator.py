@@ -3,14 +3,14 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from domain.business_rules import calculate_statutory_withdrawal
-from models.tools import ToolExecutionResult
-from tools.base import ToolInterface
+from models.base import BaseDTO
+from tools.base import BaseTool
 
 
-class RefundCalculatorArgs(BaseModel):
+class RefundCalculatorArgs(BaseDTO):
     """Arguments for calculate_refund_eligibility tool."""
 
     delivery_date: datetime | None = None
@@ -21,7 +21,7 @@ class RefundCalculatorArgs(BaseModel):
     delay_days: int = Field(default=0, ge=0)
 
 
-class RefundCalculatorTool(ToolInterface):
+class RefundCalculatorTool(BaseTool):
     """Evaluates 14-day legal return window and refundable amounts."""
 
     name: str = "calculate_refund_eligibility"
@@ -31,27 +31,14 @@ class RefundCalculatorTool(ToolInterface):
     )
     args_schema: type[RefundCalculatorArgs] = RefundCalculatorArgs
 
-    async def execute(self, **kwargs: Any) -> ToolExecutionResult:
+    async def _run(self, **kwargs: Any) -> dict[str, Any]:
         """Execute refund calculation with deterministic business logic."""
-        try:
-            args = RefundCalculatorArgs.model_validate(kwargs)
-            result = calculate_statutory_withdrawal(
-                delivery_date=args.delivery_date,
-                request_date=args.request_date,
-                item_prices_cents=args.item_prices_cents,
-                shipping_fee_cents=args.shipping_fee_cents,
-                is_express=args.is_express,
-                delay_days=args.delay_days,
-            )
-            return ToolExecutionResult(
-                success=True,
-                tool_name=self.name,
-                data=result.model_dump(),
-            )
-        except Exception as exc:
-            return ToolExecutionResult(
-                success=False,
-                tool_name=self.name,
-                error_code="CALCULATION_ERROR",
-                error_message=str(exc),
-            )
+        result = calculate_statutory_withdrawal(
+            delivery_date=kwargs.get("delivery_date"),
+            request_date=kwargs["request_date"],
+            item_prices_cents=kwargs.get("item_prices_cents", []),
+            shipping_fee_cents=kwargs.get("shipping_fee_cents", 0),
+            is_express=kwargs.get("is_express", False),
+            delay_days=kwargs.get("delay_days", 0),
+        )
+        return result.model_dump()

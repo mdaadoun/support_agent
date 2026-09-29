@@ -284,5 +284,100 @@ Inbound queries often combine logistics synonyms within a single question (e.g.,
 **Answer:**
 Customers frequently place critical identifiers in the email subject line (e.g., subject: 'Status update for CMD-10001', body: 'When will this arrive?'). If entity extraction only inspected the email body, the order ID would be missed and the inquiry erroneously flagged as `INFORMATION_MISSING`. Concatenating subject and body into a sanitized composite string ensures all identifiers and contextual cues are parsed accurately.
 
+---
+
+### Q48: Why design `ToolInterface` as a `@runtime_checkable` `Protocol` rather than strictly relying on class inheritance from an `ABC`?
+**Answer:**
+Using a `runtime_checkable` `Protocol` provides structural subtyping (duck typing), allowing third-party MCP servers, testing stubs, or external plugins to conform to the agent tool contract without coupling to internal class hierarchies. `BaseTool` complements this by offering an `ABC` for internal concrete tools that benefit from the template method pattern.
+
+---
+
+### Q49: How does the exception shielding architecture satisfy the "Zero Naked Crash" and "Zero LLM Authority" principles?
+**Answer:**
+Tools serve as defensive isolation boundaries between the untrusted LLM and underlying domain systems. When untrusted inputs from the LLM or external systems are received, Pydantic validation errors are caught and returned as `INVALID_ARGUMENTS` without crashing. Domain violations return certified error codes (e.g. `ORDER_NOT_FOUND`, `SECURITY_UNAUTHORIZED_ACCESS`), and unexpected crashes are wrapped as `TOOL_EXECUTION_ERROR`. Raw third-party exceptions never leak into the ReAct loop or API web layer.
+
+---
+
+### Q50: What is the architectural rationale behind separating `_run()` from `execute()` in `BaseTool`?
+**Answer:**
+Separating `_run()` from `execute()` applies the Template Method pattern. The public `execute()` method centrally enforces invariants: argument schema validation, structured logging, latency tracking hooks, exception containment, and output normalization. Concrete tool subclasses only implement `_run()`, keeping domain logic clean and eliminating redundant error handling across every tool.
+
+---
+
+### Q51: Why is customer PII cross-authorization checked directly inside `OrderStatusTool` rather than relying solely on the pre-extraction layer?
+**Answer:**
+Defense-in-depth. While the pre-extraction classifier parses customer emails and order numbers from inbound messages, the actual relationship between the customer email and the registered order owner can only be verified once the order record is loaded from the ERP store. Performing cross-authorization inside `OrderStatusTool` ensures that unauthorized access attempts are caught and shielded immediately at the tool runtime boundary, preventing any downstream data exposure.
+
+---
+
+### Q52: Why does `OrderStatusTool` accept an optional `MockERPClient` parameter in its constructor?
+**Answer:**
+Dependency injection allows test fixtures to inject custom or mocked ERP client instances (e.g. simulating network timeouts, circuit breaker trips, or custom datasets) without monkey-patching or manipulating global configuration, promoting test state isolation and modularity.
+
+---
+
+### Q53: How do `RefundCalculatorTool` and `DelayCalculatorTool` maintain the "Zero LLM Financial Authority" guarantee?
+**Answer:**
+Neither tool relies on LLM reasoning or prompt instructions to calculate numbers. All elapsed calendar days, 14-day statutory windows, refundable totals, and express compensation vouchers are computed via statically typed pure Python mathematical functions in `domain.business_rules`. The tools simply wrap these deterministic rules into MCP-compatible execution contracts.
+
+---
+
+### Q54: Why should an agent tool registry decouple argument schema validation from execution dispatch, and how does this support idempotency caching?
+**Answer:**
+Decoupling validation (`validate_tool_arguments`) from execution (`execute`) provides several architectural benefits:
+1. **Fail-Fast Boundary Validation:** Invalid inputs (e.g., negative refund amounts or missing customer emails) are caught immediately before consuming external I/O or database connections.
+2. **Deterministic Idempotency Caching:** Generating cache keys (e.g. `SHA256(session_id + tool_name + sorted_args)`) requires normalized, validated arguments rather than arbitrary user strings. Performing validation upfront guarantees that default values are applied and types are coerced identically across invocations.
+3. **Separation of Concerns:** Upstream orchestrators (such as the ReAct loop FSM) can inspect validation errors directly to guide agent reflection without conflating input syntax errors with tool execution failures.
+
+---
+
+### Q55: How does `ToolRegistry` support both Model Context Protocol (MCP) and OpenAI Function Calling specifications without duplicate schema definitions?
+**Answer:**
+The registry treats each tool's Pydantic `args_schema` (a subclass of `pydantic.BaseModel`) as the single source of truth for its input contract. When exporting schemas:
+1. For **Model Context Protocol (MCP)** via `get_mcp_specs()`, the registry generates dictionaries with keys `{"name": tool.name, "description": tool.description, "parameters": tool.args_schema.model_json_schema()}`.
+2. For **OpenAI Function Calling** via `get_openai_tools()`, the registry wraps the same MCP structure into the standard function tool format: `{"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.args_schema.model_json_schema()}}`.
+Because Pydantic V2 automatically handles nested types, field descriptions, and required constraints in `model_json_schema()`, changes to tool arguments instantly propagate to both protocol specifications without manual synchronization or drift.
+
+---
+
+### Q56: What is exception shielding within a Tool Registry, and why is returning `ToolExecutionResult` preferable to allowing exceptions to raise in an agent loop?
+**Answer:**
+Exception shielding intercepts all exceptions occurring during tool dispatch and normalizes them into structured, typed results (`ToolExecutionResult(success=False, error_code=..., error_message=...)`).
+1. **Unregistered Tool Lookups:** If an LLM hallucinates a non-existent tool name, the registry returns `error_code="TOOL_NOT_FOUND"` instead of throwing a `KeyError`. The agent loop can feed this observation back to the model, prompting it to select a valid tool.
+2. **Domain Violations:** If a tool raises a known domain exception (e.g., `OrderNotFoundError` or `SecurityAccessError`), the registry extracts the domain `error_code` and user-safe message, preventing stack trace leaks.
+3. **Unhandled Crashes:** Unhandled bugs (e.g., unexpected network faults or syntax errors) are caught as `UNHANDLED_TOOL_FAULT`, logged via structured logging, and returned cleanly to the caller.
+This shielding protects web worker threads from crashing and enables autonomous ReAct loops to observe failures and formulate recovery plans.
+
+---
+
+### Q57: Why is the tool idempotency key computed over `session_id + tool_name + sorted_args` rather than solely `tool_name + args`?
+**Answer:**
+Binding the idempotency key to `session_id` provides critical multi-tenancy and customer isolation:
+1. **Cross-Customer Data Isolation:** Different customers querying the same order ID (e.g. in multi-user or malicious scenarios) must not receive cached data from another session. Scoping by session ensures each conversation maintains its own access boundary.
+2. **Temporal Consistency:** Customer interactions occur in conversational bursts. A 15-minute TTL tied to an active session caches duplicate LLM tool calls during reasoning retries without permanently caching operational ERP state across days or months.
+3. **Argument Determinism:** Sorting argument keys ensures that dictionary key ordering variations produced by different LLM completions (e.g. `{"a": 1, "b": 2}` vs `{"b": 2, "a": 1}`) yield identical hash digests.
+
+---
+
+### Q58: How does `IdempotencyCache` achieve two-tier graceful degradation when Redis is unreachable, and why is this essential?
+**Answer:**
+`IdempotencyCache` implements a resilient two-tier architecture:
+1. **Lazy & Non-Blocking Connection:** On initialization or first operation, it attempts to connect to Redis with a low timeout (0.2s). If Redis is unreachable (e.g. in local development, test runners, or network partitions), it logs a debug event and marks Redis as disabled.
+2. **Transparent In-Memory Fallback:** All `get` and `set` operations fallback immediately to an internal `_in_memory_store` dictionary with timestamp-based TTL eviction. The calling code (`ToolRegistry`) is completely decoupled from Redis availability.
+3. **Zero Naked Crashes:** Network failures or Redis timeout exceptions are caught and logged at the cache boundary. Caching is treated as an optimization, never a single point of failure that halts agent operations.
+
+---
+
+### Q59: Why should tool result caching be restricted to successful executions (`result.success is True`), and when might failures be cached?
+**Answer:**
+Restricting caching to `result.success is True` guards against transient failure propagation:
+1. **Transient Outages:** If a tool call fails due to a network timeout, rate limit, or tripped circuit breaker, caching that failure would lock the customer out of retrying for 15 minutes even after the upstream service recovers.
+2. **Recovery & Re-Attempt:** In autonomous ReAct loops, when a tool execution fails, the agent may adjust parameters or re-attempt after backoff. Caching transient failures would short-circuit recovery mechanisms.
+3. **Deterministic Failures vs. System Outages:** While deterministic validation errors (e.g. `INVALID_ARGUMENTS`) are repeatable, upstream dependency failures are stateful and transient. Limiting caching to successful outputs provides the safest resilience default without polluting the cache with error payloads.
+
+
+
+
+
 
 
