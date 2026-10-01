@@ -346,9 +346,100 @@ A fault-tolerant caching pattern where data operations prioritize an external di
 ### Session-Scoped Idempotency Guard
 An architectural isolation boundary ensuring tool caching keys are bound to a specific user conversation or session ID, preventing cross-tenant and cross-customer data leakage during agent reasoning loops.
 
+---
 
+## 🔄 12. Finite State Machine (FSM) & Agent Lifecycle
 
+### Finite State Machine (FSM)
+A formal mathematical computational model consisting of a finite set of discrete states, an initial state, input triggers, and transition functions that govern permissible state changes within an autonomous agent session.
 
+### AgentLifecycleState
+A strongly typed string enumeration defining the discrete operational stages (`RECEIVED`, `ANALYZING`, `EXECUTING_TOOL`, `OBSERVING`, `GENERATING_RESPONSE`, `COMPLETED`, `REQUIRES_HUMAN`, `FAILED`) of an agent support session.
+
+### StateTransition
+An immutable Pydantic V2 data transfer object capturing the source state, target state, UTC timestamp, and diagnostic reason for every lifecycle change within an agent session.
+
+### Terminal Lifecycle State
+An absorbing state (`COMPLETED`, `REQUIRES_HUMAN`, `FAILED`) with an empty set of allowed outgoing transitions, guaranteeing permanent lifecycle conclusion and preventing re-entrant execution.
+
+### Escalation Reason
+A structured domain code or explanatory string attached to a session when transitioning to `REQUIRES_HUMAN`, indicating the root cause (e.g., PII mismatch, prompt injection, loop limit exceeded) to downstream human support queues.
+
+---
+
+## 🛡️ 13. System Prompts & Boundary Defense
+
+### Passive Input Parsing
+A prompt engineering and security constraint instructing the model that text enclosed within designated delimiters (e.g. `<user_email>`) represents passive semantic data to be processed, rather than active executable instructions or policy overrides.
+
+### Zero Financial Authority
+An inviolable domain boundary forbidding the LLM from calculating, granting, negotiating, or promising any monetary compensation, refund, or voucher; all figures must originate from deterministic domain tools.
+
+### Tool Observation Block
+A structured XML container (`<tool_observation tool="..." success="...">`) embedding certified JSON outputs from backend tools into the agent reasoning context.
+
+### Prompt Manager
+A domain orchestration facade (`PromptManager`) responsible for assembling system instructions, sanitized customer inquiries, and tool execution histories into formatted LLM prompts.
+
+### Response Synthesis Prompt
+A specialized system prompt directing the LLM to compose a certified customer response grounded strictly in verified tool observations without hallucinating external facts.
+
+---
+
+## ⚡ 14. LLM Client & Inference Runtime
+
+### LLMClient
+A resilient client facade wrapping `AsyncOpenAI` to provide type-safe structured generation, tool call dispatching, token tracking, and exception shielding.
+
+### Tenacity Retry Executor
+An asynchronous fault-tolerance controller applying exponential backoff and jitter to retry transient LLM API errors without polluting application logic.
+
+### Structured Tool Calling
+The process where an LLM selects and invokes backend tools by producing structured JSON argument payloads conforming to exported tool schemas.
+
+### LLMResponse DTO
+An immutable data transfer object capturing generated message content, parsed tool calls, token usage counts, and FinOps USD cost.
+
+### Exception Shielding Policy
+An architectural principle ensuring that third-party library exceptions (e.g. `openai.APIError`) are intercepted and converted into standardized domain exceptions (`LLMInferenceError`, `LLMAuthenticationError`, `LLMTimeoutError`).
+
+---
+
+## 🔄 15. ReAct Loop & Autonomous Execution
+
+### ReAct Execution Loop
+An autonomous agent reasoning framework orchestrating alternating cycles of reasoning thought, tool action execution, and environment observation until concluding or escalating.
+
+### Recursion Ceiling Throttler
+A deterministic execution limiter terminating multi-turn reasoning loops when the iteration count reaches a predefined quota (max 3), automatically escalating to human queues with reason `LOOP_LIMIT_EXCEEDED`.
+
+### Confidence Threshold Guard
+A safety policy requiring synthesized agent responses to meet or exceed a minimum confidence score (0.85) to achieve automatic resolution; otherwise, rerouting to `REQUIRES_HUMAN_REVIEW`.
+
+### Structural Client Protocol
+A Python `typing.Protocol` interface decoupling core agent decision logic from external infrastructure clients (LLMs, Tool Registries).
+
+### Fast-Path Security Escalation
+An immediate bypass of the reasoning loop directly to human queues upon detecting adversarial threats, legal demands, or out-of-scope inquiries.
+
+---
+
+## 🛡️ 16. Output Certification & Zero Authority Validation
+
+### Zero LLM Financial Authority
+An architectural principle and security guardrail ensuring language models possess zero autonomous authority to approve financial refunds, issue compensation vouchers, or alter order states without backing tool execution payloads.
+
+### Output Certification Guard
+A deterministic post-synthesis validation gate inspecting final response subject and body for uncertified monetary amounts, unauthorized approvals, or contradictory order states prior to customer dispatch.
+
+### Integer Cents Normalization
+The algorithmic conversion of arbitrary currency expressions into discrete integer cents to eliminate floating-point precision errors during policy reconciliation.
+
+### Negation-Aware Approval Filter
+A syntactic analysis pattern distinguishing legitimate refusal explanations from affirmative policy commitments by inspecting clause-level negation tokens.
+
+### Fail-Closed Response Neutralization
+A defensive safety mitigation replacing hallucinated or injection-compromised response text with a clean, standardized human handoff notification upon detecting an authority breach.
 
 
 

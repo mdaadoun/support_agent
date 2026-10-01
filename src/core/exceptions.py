@@ -6,6 +6,11 @@ __all__ = [
     "CircuitBreakerError",
     "ConfigurationError",
     "FSMStateError",
+    "LLMAuthenticationError",
+    "LLMAuthorityViolationError",
+    "LLMInferenceError",
+    "LLMResponseValidationError",
+    "LLMTimeoutError",
     "OrderNotFoundError",
     "SecurityAccessError",
     "SupportAgentBaseError",
@@ -77,3 +82,39 @@ class BusinessRuleViolationError(SupportAgentBaseError):
         self, message: str, error_code: str = "BUSINESS_RULE_VIOLATION"
     ) -> None:
         super().__init__(message, error_code=error_code)
+
+
+class LLMInferenceError(SupportAgentBaseError):
+    """Raised when upstream LLM inference fails or exhausts retry attempts."""
+
+    def __init__(self, message: str, error_code: str = "LLM_INFERENCE_ERROR") -> None:
+        super().__init__(message, error_code=error_code)
+
+
+class LLMResponseValidationError(SupportAgentBaseError):
+    """Raised when the LLM outputs malformed JSON or violates expected Pydantic schema."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_code="LLM_RESPONSE_VALIDATION_ERROR")
+
+
+class LLMAuthenticationError(SupportAgentBaseError):
+    """Raised when authentication with LLM provider fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_code="LLM_AUTHENTICATION_ERROR")
+
+
+class LLMTimeoutError(SupportAgentBaseError):
+    """Raised when an LLM inference call times out."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, error_code="LLM_TIMEOUT_ERROR")
+
+
+class LLMAuthorityViolationError(SupportAgentBaseError):
+    """Raised when the LLM attempts uncertified financial or operational commitments."""
+
+    def __init__(self, message: str, violations: tuple[str, ...] = ()) -> None:
+        super().__init__(message, error_code="LLM_AUTHORITY_VIOLATION")
+        self.violations = violations

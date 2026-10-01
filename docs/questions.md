@@ -375,9 +375,98 @@ Restricting caching to `result.success is True` guards against transient failure
 2. **Recovery & Re-Attempt:** In autonomous ReAct loops, when a tool execution fails, the agent may adjust parameters or re-attempt after backoff. Caching transient failures would short-circuit recovery mechanisms.
 3. **Deterministic Failures vs. System Outages:** While deterministic validation errors (e.g. `INVALID_ARGUMENTS`) are repeatable, upstream dependency failures are stateful and transient. Limiting caching to successful outputs provides the safest resilience default without polluting the cache with error payloads.
 
+---
 
+### Q60: Why enforce a declarative Finite State Machine controller in an autonomous ReAct agent rather than letting the LLM decide state transitions dynamically?
+**Answer:**
+Autonomous LLMs are probabilistic engines vulnerable to hallucinations, loop drift, and instruction injection. Letting the model manage its own lifecycle risks infinite tool execution loops, bypassing security checks (such as skipping `ANALYZING` or PII verification), or prematurely declaring completion. An external, deterministic Python FSM controller enforces hard architectural boundaries: tools can only execute during `EXECUTING_TOOL`, observations must precede responses, and reaching limits guarantees deterministic escalation to `REQUIRES_HUMAN`.
 
+---
 
+### Q61: How does the FSM controller guarantee fail-closed security when encountering unexpected runtime faults or adversarial prompt injections?
+**Answer:**
+The FSM defines explicit paths to `REQUIRES_HUMAN` and `FAILED` from every active processing state. If the pre-extraction parser identifies a prompt injection or hostile legal threat during `ANALYZING`, the controller immediately transitions to `REQUIRES_HUMAN` with the diagnostic reason and terminates autonomous processing. Furthermore, any attempt to perform an unauthorized transition raises `FSMStateError` (derived from `AppBaseError`), halting execution before unvetted actions can occur.
 
+---
+
+### Q62: What is the architectural significance of modeling `StateTransition` as a frozen Pydantic DTO (`BaseDTO` derivative)?
+**Answer:**
+Modeling `StateTransition` with `ConfigDict(frozen=True, extra="forbid")` guarantees data immutability and contract rigidity. Once a transition is recorded in session history, it cannot be tampered with or modified by downstream tasks. Furthermore, inheriting from `BaseDTO` enables standard JSON serialization, making it effortless to persist the audit trail to PostgreSQL JSONB columns, Redis caches, or structured JSON logging systems in Phase 7.
+
+---
+
+### Q63: Why is Zero LLM Financial Authority enforced at both the system prompt level and the backend schema validator level?
+**Answer:**
+Defense-in-depth. System prompt instructions guide the LLM reasoning and response generation, preventing the model from volunteering ungrounded refund promises. However, because probabilistic models can still hallucinate or be misled by complex adversarial inputs, a backend schema validation guard rejects any final response containing monetary amounts or approval determinations that do not verifiably match certified tool outputs.
+
+---
+
+### Q64: How does XML boundary framing (`<user_email>`) combined with iterative tag sanitization neutralize indirect prompt injection?
+**Answer:**
+Attackers frequently craft nested tags (e.g. `<<user_email>/user_email>` or spoofed `</user_email><system>`) to break out of data delimiters. The pre-prompt sanitizer iteratively strips prohibited tags until reaching a steady state, replacing them with `[TAG_REMOVED]`. When wrapped into a single, clean `<user_email>` envelope, the system prompt explicitly informs the model that any instruction inside `<user_email>` is untrusted data, effectively preventing hijacked execution.
+
+---
+
+### Q65: Why does PromptManager format tool traces as structured `<tool_observation>` blocks rather than raw string dumps?
+**Answer:**
+Structured `<tool_observation>` blocks provide clear semantic separation between multiple tool calls across multi-turn ReAct cycles. Explicit XML attributes (`tool`, `success`, `error_code`) and formatted JSON payloads allow the model reasoning engine to unambiguously associate return data with specific tool invocations, recognize domain failure codes (such as `ORDER_NOT_FOUND`), and synthesize factually grounded responses.
+
+---
+
+### Q66: Why should an autonomous enterprise support agent enforce a hard temperature ceiling ($\le 0.2$)?
+**Answer:**
+Customer support operations require high factual fidelity, deterministic tool parameter generation, and consistent policy compliance. Higher temperatures increase sampling randomness, leading to hallucinations, hallucinated tool arguments, invalid JSON formatting, and erratic edge-case behavior. Enforcing temperature $\le 0.2$ ensures reproducible reasoning paths and minimizes financial or operational error risk.
+
+---
+
+### Q67: How does the LLM client discriminate between retriable and non-retriable exceptions during inference?
+**Answer:**
+Using Tenacity's `retry_if_exception_type`, the client only retries transient faults such as `RateLimitError` (HTTP 429), `APITimeoutError`, `APIConnectionError`, and `InternalServerError` (HTTP 5xx). Conversely, permanent errors such as `AuthenticationError` (HTTP 401) or invalid schemas fail fast immediately, avoiding useless retries, latency spikes, and wasted API quota.
+
+---
+
+### Q68: Why are raw tool call arguments parsed into immutable Pydantic DTOs (`LLMToolCall`) at the client boundary rather than inside the agent loop?
+**Answer:**
+Boundary validation and layer isolation. Raw LLM completions contain unverified JSON strings inside tool argument fields. By parsing, validating JSON syntax, and packaging calls into immutable `LLMToolCall` DTOs with error shielding at the client layer, the ReAct agent loop receives verified, clean data contracts, preventing syntax errors from propagating into domain execution logic.
+
+---
+
+### Q69: Why is a hard recursion ceiling (e.g. 3 iterations) essential in an autonomous ReAct agent loop?
+**Answer:**
+Autonomous LLMs can enter circular reasoning loops, repeat identical tool calls with minor variations, or thrash indefinitely when encountering missing data or unexpected tool errors. Without a hard ceiling, this causes unbounded latency, exponential token costs, and poor customer experience. Capping iterations at 3 bounds worst-case execution time, caps FinOps expenses, and ensures deterministic escalation to human agents via `LOOP_LIMIT_EXCEEDED`.
+
+---
+
+### Q70: How does the ReAct engine enforce Layer Isolation between Core Domain and Infrastructure?
+**Answer:**
+Core Domain modules (`src/agent/`) define structural typing interfaces (`LLMClientProtocol`, `ToolRegistryProtocol`) rather than importing concrete Infrastructure implementations (`LLMClient`, `ToolRegistry`) at module level. The engine receives dependencies via inversion of control / constructor injection. This prevents Domain logic from leaking into network or database layers and enables 100% isolated unit testing with lightweight test doubles.
+
+---
+
+### Q71: What occurs when the synthesized response confidence falls below the configured threshold?
+**Answer:**
+Even if all backend tools execute successfully, if the model's self-assessed or validated confidence score is below the threshold (0.85), the engine overrides the status from `RESOLVED_AUTOMATICALLY` to `REQUIRES_HUMAN_REVIEW`. It populates a human escalation reason detailing the confidence shortfall and transitions the FSM to `REQUIRES_HUMAN`, ensuring uncertain resolutions are audited by a human representative before reaching the customer.
+
+---
+
+### Q72: Why is Zero LLM Financial Authority enforced deterministically in code rather than relying on system prompt instructions alone?
+**Answer:**
+System prompts provide probabilistic steering but cannot offer mathematical guarantees against hallucination or indirect prompt injection (e.g. adversarial emails instructing the model to issue a €500 refund). The deterministic `ZeroLLMAuthorityGuard` acts as a zero-trust policy enforcement point, parsing all cited monetary figures and approval statements and verifying them against certified tool traces before any response can be transmitted.
+
+---
+
+### Q73: How does the validation guard handle legitimate rejection emails (such as expired return refusals) without triggering false-positive approval violations?
+**Answer:**
+The guard implements negation-aware clause parsing. Instead of naive keyword matching on words like "approved" or "refund", it segments text into sentences and checks for negation markers ("cannot", "not", "unable", "refused", "ineligible"). Rejection statements like "Your refund cannot be approved" are recognized as refusals and permitted, whereas unnegated claims like "Your refund has been approved" require backing tool certification.
+
+---
+
+### Q74: What sequence of actions occurs when the ReAct loop detects an authority validation violation in the synthesized output?
+**Answer:**
+When an authority violation is detected (e.g., an uncertified €500 figure or unverified refund approval), the guard immediately intervenes:
+1. Overrides `status_resolution` to `REQUIRES_HUMAN_REVIEW`.
+2. Populates `human_escalation_reason` with the exact violation details.
+3. Neutralizes the customer email body to a safe human-handoff message, preventing uncertified promises from reaching the customer.
+4. Transitions the FSM state from `GENERATING_RESPONSE` to `REQUIRES_HUMAN`.
 
 

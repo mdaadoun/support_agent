@@ -21,11 +21,10 @@
   - **`response.py`:** Certified agent response contract (`AgentFinalResponse`).
 - **`domain/`:** Pure deterministic business rules:
   - **`business_rules.py`:** 14-day statutory cooling-off arithmetic and delivery delay voucher computation (zero LLM financial authority).
-- **`agent/`:** Autonomous orchestration engine:
-  - **`controller.py`:** Finite State Machine (FSM) enforcing valid lifecycle transitions.
+  - **`controller.py`:** Finite State Machine (FSM) controller (`AgentFSMController`) enforcing valid lifecycle transitions, absorbing terminal states, and audit tracking.
   - **`loop.py`:** ReAct decision-action loop capped at 3 iterations.
   - **`prompts.py`:** XML boundary encapsulation and prompt boundary definitions.
-  - **`state.py`:** Session state and trajectory models.
+  - **`state.py`:** Session state container (`AgentSessionState`), lifecycle state enum (`AgentLifecycleState`), and immutable audit DTO (`StateTransition`).
 - **`security/`:** Defense-in-depth and isolation:
   - **`sanitizer.py`:** Defensive input sanitization: non-printable control character scrubbing, bidi/format override removal, bounded iterative tag spoofing neutralization (`[TAG_REMOVED]`), `<user_email>` XML boundary encapsulation, regex entity extraction (`extract_order_id`, `extract_email`), and prompt injection detection.
   - **`access_control.py`:** PII access control and cross-authorization guard (`AccessControlGuard`): canonical email normalization, boolean authorization checks, fail-closed access assertions, polymorphic record inspection, and tool exception shielding.
@@ -667,6 +666,271 @@ ToolRegistry.execute(tool_name, session_id, **kwargs)
 4. Active TTL management enforces 15-minute expiration (900 seconds). In Redis, this is implemented using native `EX 900` flags with `NX=True` (set-if-not-exists) for distributed atomicity. In the in-memory fallback, each item is stored as a `(payload, expires_at_timestamp)` tuple; expired items are pruned lazily on access.
 5. `ToolRegistry.execute` intercepts execution requests when an optional `session_id` is supplied. It checks the cache before calling `tool.execute()`. On cache hits, it immediately returns the cached `ToolExecutionResult`, saving external API calls, latency, and FinOps token costs.
 6. Caching is strictly confined to successful outcomes (`result.success is True`). Transient network errors, rate limits, or authorization rejections are never cached, enabling callers to retry without waiting for TTL expiration.
+
+---
+
+### Finite State Machine (FSM) Lifecycle Controller & Session Transition Flow (`src/agent/controller.py`, `src/agent/state.py`)
+
+```text
+[ Inbound Email Message ]
+        │
+        ▼
+   create_session(session_id, inbound_message)
+        │ ── Initial State: AgentLifecycleState.RECEIVED
+        │ ── State History: [], Tool Traces: []
+        │
+        ▼
+AgentFSMController.transition(session, ANALYZING)
+        │ ── Assert target in VALID_TRANSITIONS[RECEIVED]
+        │ ── Append StateTransition(from=RECEIVED, to=ANALYZING)
+        │
+        ├── [ Pre-Extraction / Security Guard ]
+        │       ├── Injection / Threat / Out-of-Scope ──► AgentFSMController.transition_to_human(session, reason)
+        │       │                                               └── State: REQUIRES_HUMAN (Terminal)
+        │       └── Valid Inbound Demand ──► AgentFSMController.transition(session, EXECUTING_TOOL)
+        │
+        ├── [ Tool Execution Dispatch ]
+        │       │
+        │       ▼
+        │   AgentFSMController.transition(session, OBSERVING)
+        │       │
+        │       ├── Additional Tool Required & Iteration < 3:
+        │       │       └── AgentFSMController.transition(session, EXECUTING_TOOL)  [Multi-Turn ReAct Loop]
+        │       │
+        │       ├── Loop Ceiling Reached (Iteration >= 3) or Unrecoverable Fault:
+        │       │       └── AgentFSMController.transition_to_human(session, "LOOP_LIMIT_EXCEEDED") [Terminal]
+        │       │
+        │       └── Sufficient Context Collected:
+        │               └── AgentFSMController.transition(session, GENERATING_RESPONSE)
+        │
+        └── [ Response Validation & Delivery ]
+                ├── FinalResponse Schema Passes ──► AgentFSMController.transition(session, COMPLETED) [Terminal]
+                └── Validation Failure / Hallucination ──► AgentFSMController.transition_to_human(session, reason) [Terminal]
+```
+
+1. **Session Lifecycle Initialization:** An incoming customer email is wrapped into `AgentSessionState` via `create_session(session_id, inbound_message)`. The session initializes strictly in `AgentLifecycleState.RECEIVED` with empty `tool_traces` and an empty `state_history` audit collection.
+2. **Deterministic State Machine Enforcement:** Every state change must flow through `AgentFSMController.transition(session, new_state, reason=...)`. The controller consults the centralized `VALID_TRANSITIONS` table (`dict[AgentLifecycleState, frozenset[AgentLifecycleState]]`). Any unauthorized transition attempt immediately logs an error and raises `FSMStateError` (`error_code="FSM_STATE_INVALID"`).
+3. **Immutable Forensic Audit Trail:** Each successful transition instantiates an immutable `StateTransition` Pydantic V2 DTO (`frozen=True, extra="forbid"`), stamping the `from_state`, `to_state`, UTC `timestamp`, and diagnostic `reason` into `session.state_history`. This enables post-hoc debugging, telemetry tracing, and audit qualification.
+4. **Fail-Closed Security & Escalation Shortcuts:** When anomalies (such as prompt injections, hostile legal threats, or PII mismatches) are detected, callers invoke `AgentFSMController.transition_to_human(session, reason)`. This automatically attaches the `escalation_reason` to the session and advances the state to `REQUIRES_HUMAN`.
+5. **Multi-Turn Loop Re-Entrance:** The transition graph explicitly permits looping from `OBSERVING` back to `EXECUTING_TOOL`, facilitating autonomous multi-turn ReAct tool execution while bounding recursion through iteration checks.
+6. **Absorbing Terminal State Isolation:** Terminal states (`COMPLETED`, `REQUIRES_HUMAN`, `FAILED`) map to empty transition sets (`frozenset()`). Once a session reaches a terminal state, any further transition is rejected with `FSMStateError`, eliminating zombie background executions.
+
+---
+
+### System Prompt Engineering, Boundary Enforcement & Observation Formatting (`src/agent/prompts.py`)
+
+```text
+[ Raw Inbound Email ]
+        │
+        ▼
+wrap_user_email_payload() ──► Sanitization: strips nested XML tags, normalizes whitespace
+        │
+        ▼
+format_user_prompt()      ──► Envelopes input into passive <user_email> ... </user_email>
+        │
+        ▼
+PromptManager.build_initial_agent_prompt()
+        │
+        ├── Prefixes with <metadata> (Detected Intent, Extracted Order ID)
+        └── Instructs ReAct loop to initiate reasoning
+        │
+        ▼
+[ Multi-Turn ReAct Cycle ]
+        │
+        ├── Tool Execution Completed ──► ToolExecutionResult / ToolExecutionTrace
+        │                                         │
+        │                                         ▼
+        │                         format_tool_trace_observation()
+        │                                         │
+        │                                         ▼
+        │                         <tool_observation tool="..." success="..." error_code="...">
+        │                             {"output": ..., "status": ...}
+        │                         </tool_observation>
+        │
+        ▼
+PromptManager.build_react_history_prompt()
+        │
+        └── Chronologically aggregates initial prompt and all <tool_observation> blocks
+        │
+        ▼
+PromptManager.build_final_response_prompt()
+        │
+        └── Pairs <user_email> with verified tool observations and instructions to synthesize
+            a grounded customer response with ZERO uncertified financial commitments
+```
+
+1. **Passive Input Parsing (`<user_email>` Framing):** User inquiries are processed through `format_user_prompt(email_body)`, which sanitizes control characters, strips nested or forged XML boundary tags using `wrap_user_email_payload`, and envelopes the body within `<user_email>...</user_email>`. System prompt instructions inform the LLM that content within this tag is passive customer data and must never be interpreted as operational directives or policy changes.
+2. **Zero Financial Authority Invariant:** Hardened system prompts (`AGENT_SYSTEM_PROMPT` and `RESPONSE_SYNTHESIS_SYSTEM_PROMPT`) explicitly forbid the model from computing, promising, negotiating, or volunteering any financial amounts, refunds, discounts, or vouchers. Any financial compensation must be generated exclusively by deterministic backend tools (`calculate_refund_eligibility`, `calculate_delivery_delay`) and echoed verbatim.
+3. **Structured Tool Observation Framing:** Observations returned from backend tools are wrapped into structured `<tool_observation>` blocks via `format_observation` and `format_tool_trace_observation`. XML attributes (`tool`, `success`, `error_code`) and indented JSON payloads provide deterministic syntactic separation between LLM reasoning thoughts, user input, and trusted backend tool data.
+4. **Centralized PromptManager Facade:** The `PromptManager` class decouples prompt formatting from the execution loop. It exposes static factory methods (`build_initial_agent_prompt`, `build_react_history_prompt`, `build_final_response_prompt`) that standardize metadata injection, chronological observation history compilation, and response synthesis instructions across the application.
+
+---
+
+### LLM Inference Client Wrapper, Resilient Retries & Tool Calling (`src/clients/llm_client.py`, `src/clients/llm_retry.py`, `src/clients/llm_parser.py`)
+
+```text
+[ LLM Request: messages, tools, response_schema ]
+        │
+        ▼
+LLMClient.generate_with_tools() / generate_structured()
+        │
+        ├── 1. Temperature Validation: enforce 0.0 <= temperature <= 0.2
+        ├── 2. Parameter Assembly: model, messages, tools, tool_choice
+        │
+        ▼
+execute_with_retry() ──► Tenacity AsyncRetrying loop
+        │
+        ├── Attempt API call (AsyncOpenAI client)
+        │       │
+        │       ├── Transient Error (429 RateLimit, 5xx ServerError, Timeout, Connection)?
+        │       │       └── Exponential Backoff with Jitter (up to max_retries) ──► Re-attempt
+        │       │
+        │       └── Fatal Error (401 Auth, 400 Bad Request, exhausted retries)?
+        │               └── Shield into AppBaseError (LLMAuthenticationError, LLMInferenceError)
+        │
+        ▼
+[ Raw ChatCompletion / ParsedChatCompletion Response ]
+        │
+        ├── parse_tool_calls(message.tool_calls)
+        │       └── Validates and parses JSON argument strings into tuple[LLMToolCall, ...]
+        │
+        ├── parse_usage_metrics(response.usage, cost_tracker)
+        │       └── Computes prompt/completion token sums and real-time USD cost
+        │
+        ▼
+[ LLMResponse DTO ] (immutable, typed, certified)
+```
+
+1. **Deterministic Sampling Ceiling ($T \le 0.2$):** `LLMClient` guarantees reproducible outputs by strictly bounding temperature. At initialization, if a temperature is passed, it validates `0.0 <= temperature <= 0.2` (raising `BusinessRuleViolationError` on violations); otherwise, it clamps the default setting to $\le 0.2$.
+2. **Selective Tenacity Retrying:** The execution pipeline delegates all network I/O to `execute_with_retry` backed by `AsyncRetrying`. It selectively retries ephemeral errors (`RateLimitError`, `APIConnectionError`, `APITimeoutError`, `InternalServerError`) using exponential backoff with jitter (`retry_min_wait` to `retry_max_wait`). Fatal client errors (`AuthenticationError`, `BadRequestError`) fail fast without retry waste.
+3. **Structured Response Parsing:** For schema-constrained outputs (`generate_structured`), the client leverages `beta.chat.completions.parse` with automated fallback to `chat.completions.create(response_format={"type": "json_object"})` followed by `model_validate_json`. Validation failures or model refusals immediately raise `LLMResponseValidationError`.
+4. **Tool Calling & Argument Normalization:** When invoking tools via `generate_with_tools`, raw JSON arguments returned from the provider are safely decoded and wrapped into immutable `LLMToolCall` DTOs (`BaseDTO` derivatives). Malformed JSON payloads are trapped at the boundary with diagnostic errors.
+5. **Real-Time Token Telemetry:** Every tool generation automatically runs through `parse_usage_metrics`, computing token usage and estimating USD cost via `FinOpsCostTracker`, packing these metrics directly into the returned `LLMResponse.usage` object.
+
+---
+
+### ReAct Execution Loop Engine & Bounded Autonomous Reasoning (`src/agent/loop.py`, `src/agent/protocols.py`, `src/agent/response_builder.py`)
+
+```text
+[ Inbound Session: CustomerInboundPayload ]
+        │
+        ▼
+ReActLoopEngine.run()
+        │
+        ├── Transition FSM: RECEIVED ──► ANALYZING
+        │
+        ├── Pre-Flight Security & Scope Check (extracted_demand)
+        │       │
+        │       └── Threat/Hostile/Out-of-Scope? ──► YES ──► build_escalated_response()
+        │                                                     │
+        │                                                     ▼
+        │                                            Transition: REQUIRES_HUMAN
+        ▼
+[ Multi-Turn ReAct Cycle (iteration = 0 .. max_iterations - 1) ]
+        │
+        ├── Check Recursion Ceiling: iteration >= 3?
+        │       └── YES ──► build_escalated_response(LOOP_LIMIT_EXCEEDED) ──► REQUIRES_HUMAN
+        │
+        ├── Compile Messages (PromptManager.build_react_history_prompt)
+        ├── Export Tool Schemas (tool_registry.get_mcp_schemas)
+        │
+        ▼
+LLMClient.generate_with_tools()
+        │
+        ├── Model Decides: Tool Call Requested?
+        │       │
+        │       ├── YES:
+        │       │     ├── Transition FSM: ANALYZING ──► EXECUTING_TOOL
+        │       │     ├── Dispatch tool via tool_registry.execute_shielded()
+        │       │     ├── Record ToolExecutionTrace (id, tool, args, result)
+        │       │     └── Transition FSM: EXECUTING_TOOL ──► OBSERVING
+        │       │             └── Transition FSM: OBSERVING ──► ANALYZING (Next Turn)
+        │       │
+        │       └── NO (Reasoning complete):
+        │             └── Break Multi-Turn Loop ──► Proceed to Synthesis
+        ▼
+Transition FSM: ANALYZING ──► GENERATING_RESPONSE
+        │
+        ▼
+synthesize_certified_response()
+        │
+        ├── Compile synthesis prompt (PromptManager.build_final_response_prompt)
+        ├── LLMClient.generate_structured(ResponseSynthesisOutput)
+        │
+        ▼
+[ Confidence Evaluation & Final Resolution ]
+        │
+        ├── Confidence Score >= 0.85?
+        │       │
+        │       ├── YES ──► RESOLVED_AUTOMATICALLY
+        │       │             └── Transition FSM: GENERATING_RESPONSE ──► COMPLETED
+        │       │
+        │       └── NO  ──► REQUIRES_HUMAN_REVIEW (LOW_CONFIDENCE)
+        │                     └── Transition FSM: GENERATING_RESPONSE ──► REQUIRES_HUMAN
+        ▼
+[ Return AgentFinalResponse ]
+```
+
+1. **Hexagonal Layer Decoupling via Structural Protocols:** `src/agent/protocols.py` defines `LLMClientProtocol` and `ToolRegistryProtocol` using `@runtime_checkable` Python `typing.Protocol`. The core agent domain never imports concrete infrastructure clients (`LLMClient`, `ToolRegistry`), preserving strict layer isolation and allowing full mockability in tests.
+2. **Deterministic Pre-Flight Fast-Path Escalation:** Before committing LLM tokens or executing tools, the engine inspects the pre-extracted demand. Hostile litigation threats, aggressive language, or out-of-scope queries immediately bypass the ReAct loop and trigger `build_escalated_response`, routing straight to `AgentLifecycleState.REQUIRES_HUMAN`.
+3. **Hard Recursion Ceiling Throttler ($N_{\max} = 3$):** To prevent runaway loops, infinite circular reasoning, and token exhaustion, the multi-turn loop strictly caps iterations at 3. Reaching this boundary triggers deterministic escalation with reason `LOOP_LIMIT_EXCEEDED` and transitions the FSM to `REQUIRES_HUMAN`.
+4. **FSM State Machine Lifecycle Governance:** Every phase transition (`RECEIVED -> ANALYZING -> EXECUTING_TOOL -> OBSERVING -> GENERATING_RESPONSE -> COMPLETED / REQUIRES_HUMAN`) is governed and recorded by `AgentStateController`, maintaining an immutable audit log of lifecycle states with diagnostic transition reasons.
+5. **Two-Tier Confidence Guard & Response Synthesis:** Customer responses are synthesized via `ResponseSynthesisOutput` enforcing structured validation. If the model's reported confidence falls below 0.85, the engine overrides the status to `REQUIRES_HUMAN_REVIEW` and routes the session to human queues, preventing ungrounded or low-confidence resolutions from reaching the customer.
+
+---
+
+### Zero LLM Authority Validation Guard & Output Certification (`src/agent/validator.py`, `src/agent/validator_rules.py`)
+
+```text
+[ Synthesized Response / AgentFinalResponse candidate ]
+        │
+        ▼
+ZeroLLMAuthorityGuard.validate()
+        │
+        ├── 1. extract_monetary_amounts(subject + body)
+        │       └── Parse (€, $, £, EUR, USD, cents) ──► Convert to integer cents
+        │
+        ├── 2. extract_certified_amounts(session.tool_traces)
+        │       └── Extract deterministic cents from successful tool payloads
+        │       │
+        │       └── Uncertified monetary amount detected?
+        │               └── YES ──► Flag Violation: "Uncertified monetary figure"
+        │
+        ├── 3. detect_approval_claims(subject + body)
+        │       ├── Negation-Aware Filtering (skip "cannot be approved", "not eligible")
+        │       ├── Affirmative Refund Claim? ──► check_refund_tool_authorization()
+        │       │       └── Unbacked? ──► Flag Violation: "Unauthorized refund approval"
+        │       └── Affirmative Voucher Claim? ──► check_voucher_tool_authorization()
+        │               └── Unbacked? ──► Flag Violation: "Unauthorized voucher approval"
+        │
+        ├── 4. Operational Mutation Check (MUTATION_RE)
+        │       └── Claims order cancellation or address modification? ──► Flag Violation
+        │
+        ├── 5. Security Access Check
+        │       └── SECURITY_UNAUTHORIZED_ACCESS in traces with RESOLVED_AUTOMATICALLY?
+        │               └── Flag Violation: "Security access violation"
+        ▼
+[ AuthorityValidationResult(is_valid, violations) ]
+        │
+        ├── is_valid == True:
+        │       └── Return unchanged certified response ──► FSM: COMPLETED
+        │
+        └── is_valid == False:
+                ├── guard_response() overrides status_resolution ──► REQUIRES_HUMAN_REVIEW
+                ├── Populates human_escalation_reason with violation diagnostics
+                ├── Neutralizes email_response_body ──► Standard human handoff message
+                └── Transition FSM: GENERATING_RESPONSE ──► REQUIRES_HUMAN
+```
+
+1. **Separation of Privileges & Zero Financial Authority:** The language model is completely stripped of autonomous authority to authorize refunds, approve discount vouchers, or mutate orders. All financial values and legal entitlements must originate from pure, certified Python calculations (`src/domain/business_rules.py`) executed via backend tools.
+2. **Canonical Integer Cents Normalization:** Currency figures cited in customer emails or generated responses are parsed across multi-currency symbols (`€`, `$`, `£`) and units (`EUR`, `USD`, `cents`) into exact integer cents (`_parse_to_cents`). This eliminates floating-point representation artifacts and enables exact set membership checks against certified tool traces.
+3. **Negation-Aware Approval Clause Parsing:** The guard parses text on clause and sentence boundaries, checking for explicit negation tokens (`cannot`, `not`, `unable`, `refused`, `ineligible`). This allows the agent to safely convey statutory refusals (e.g. 14-day expired return refusals) without triggering false-positive escalations, while strictly intercepting unbacked affirmative approvals.
+4. **Defense-in-Depth Pipeline Integration:** Output validation operates as a dual gate: first within `synthesize_certified_response` in `src/agent/response_builder.py` prior to response packaging, and second via `guard_response` inside `ReActLoopEngine.run` before FSM state finalization.
+5. **Fail-Closed Response Neutralization:** If an authority breach is detected (e.g., prompted by an indirect prompt injection like TC-08), `guard_response` immediately overrides `status_resolution` to `REQUIRES_HUMAN_REVIEW`, populates `human_escalation_reason`, and replaces the uncertified email body with a neutral human handoff message, guaranteeing that no unauthorized commitments reach the customer.
+
+
+
+
 
 
 

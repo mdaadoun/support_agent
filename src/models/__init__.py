@@ -9,7 +9,12 @@ from models.enums import (
     ResolutionStatusEnum,
 )
 from models.extraction import ExtractedDemand, ExtractedEntities
-from models.response import AgentFinalResponse
+from models.llm import LLMResponse, LLMToolCall, LLMUsage
+from models.response import (
+    AgentFinalResponse,
+    AuthorityValidationResult,
+    ResponseSynthesisOutput,
+)
 from models.tools import (
     DeliveryDelayResult,
     OrderDetailsResult,
@@ -20,17 +25,22 @@ from models.tools import (
 
 __all__ = [
     "AgentFinalResponse",
+    "AuthorityValidationResult",
     "BaseDTO",
     "DeliveryDelayResult",
     "ExtractedDemand",
     "ExtractedEntities",
     "InboundEmailMessage",
     "IntentEnum",
+    "LLMResponse",
+    "LLMToolCall",
+    "LLMUsage",
     "OrderDetailsResult",
     "OrderStatusEnum",
     "RefundEligibilityResult",
     "RefundReasonCode",
     "ResolutionStatusEnum",
+    "ResponseSynthesisOutput",
     "ToolCallTrace",
     "ToolExecutionResult",
 ]

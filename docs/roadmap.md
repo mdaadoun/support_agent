@@ -142,16 +142,16 @@ Unit tests in `tests/unit/test_schemas.py` confirm model immutability, extra fie
 **Dependencies:** Phases 2, 4, 5.  
 **Deliverables:** FSM lifecycle controller, ReAct execution loop, recursion throttler ($N_{\max} = 3$), LLM client integration.
 
-- [ ] **Step 6.1: FSM State Machine Controller:**
+- [x] **Step 6.1: FSM State Machine Controller:**
   - Implement `src/agent/controller.py` enforcing transitions: `RECEIVED` ──► `ANALYZING` ──► `EXECUTING_TOOL` ──► `OBSERVING` ──► `GENERATING_RESPONSE` ──► `COMPLETED` / `REQUIRES_HUMAN` / `FAILED`.
-- [ ] **Step 6.2: System Prompt & Boundary Templates:**
+- [x] **Step 6.2: System Prompt & Boundary Templates:**
   - Author strict system prompts in `src/agent/prompts.py` enforcing zero LLM financial authority and passive parsing of `<user_email>`.
-- [ ] **Step 6.3: LLM Inference Client Wrapper:**
+- [x] **Step 6.3: LLM Inference Client Wrapper:**
   - Implement `src/clients/llm_client.py` wrapping LiteLLM / AsyncOpenAI with `temperature <= 0.2`, structured output tool calling, and Tenacity retries.
-- [ ] **Step 6.4: ReAct Execution Loop Engine:**
+- [x] **Step 6.4: ReAct Execution Loop Engine:**
   - Implement `src/agent/loop.py` orchestrating multi-step decision-action-observation cycles.
   - Enforce hard recursion ceiling at **3 tool iterations** with automatic escalation to `REQUIRES_HUMAN` upon limit reach.
-- [ ] **Step 6.5: Zero LLM Authority Validation Guard:**
+- [x] **Step 6.5: Zero LLM Authority Validation Guard:**
   - Validate that final email responses containing monetary figures or approval statements strictly match certified tool outputs.
 
 **Verification Checkpoint:**  
