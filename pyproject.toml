@@ -32,6 +32,7 @@ tenacity = "^8.2.3"
 typer = "^0.12.0"
 rich = "^13.7.1"
 redis = {version = "^5.0.3", optional = true}
+tiktoken = ">=0.7.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.1.1"

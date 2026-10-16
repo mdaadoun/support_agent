@@ -3,11 +3,25 @@
 from enum import StrEnum
 
 __all__ = [
+    "AgentLifecycleState",
     "IntentEnum",
     "OrderStatusEnum",
     "RefundReasonCode",
     "ResolutionStatusEnum",
 ]
+
+
+class AgentLifecycleState(StrEnum):
+    """Finite State Machine states of an active agent support session."""
+
+    RECEIVED = "RECEIVED"
+    ANALYZING = "ANALYZING"
+    EXECUTING_TOOL = "EXECUTING_TOOL"
+    OBSERVING = "OBSERVING"
+    GENERATING_RESPONSE = "GENERATING_RESPONSE"
+    COMPLETED = "COMPLETED"
+    REQUIRES_HUMAN = "REQUIRES_HUMAN"
+    FAILED = "FAILED"
 
 
 class OrderStatusEnum(StrEnum):

@@ -165,16 +165,16 @@ Agent loop successfully runs multi-turn tool calling, halts at 3 iterations, and
 **Dependencies:** Phase 6.  
 **Deliverables:** PostgreSQL audit log repository, JSON Lines fallback, `structlog` logging, FinOps cost estimation, OpenTelemetry tracer.
 
-- [ ] **Step 7.1: Redis Cache & Session State Store:**
+- [x] **Step 7.1: Redis Cache & Session State Store:**
   - Implement `src/persistence/cache.py` managing session states and idempotency keys with TTL expiry.
-- [ ] **Step 7.2: Audit Log Repository:**
+- [x] **Step 7.2: Audit Log Repository:**
   - Implement `src/persistence/repository.py` for PostgreSQL `agent_audit_logs` storage with JSONB trace payloads.
   - Implement local fallback appending to `traces.jsonl` when PostgreSQL is unavailable.
-- [ ] **Step 7.3: Structured JSON Logging:**
+- [x] **Step 7.3: Structured JSON Logging:**
   - Configure `structlog` in `src/observability/logger.py` for structured JSON output to stdout.
-- [ ] **Step 7.4: FinOps Token & Cost Calculator:**
+- [x] **Step 7.4: FinOps Token & Cost Calculator:**
   - Implement `src/observability/cost_tracker.py` computing token usage via `tiktoken` and estimating exact USD costs ($C_{\text{LLM\_in}} + C_{\text{LLM\_out}}$).
-- [ ] **Step 7.5: OpenTelemetry / Langfuse Tracing Adapter:**
+- [x] **Step 7.5: OpenTelemetry / Langfuse Tracing Adapter:**
   - Implement `src/observability/tracer.py` emitting OpenInference traces for tool invocations, latencies, and agent spans.
 
 **Verification Checkpoint:**  

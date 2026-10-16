@@ -14,9 +14,10 @@
   - **`retry.py`:** Tenacity-decorated retry policies with exponential backoff and jitter.
 - **`models/`:** Strictly typed, immutable Pydantic V2 DTOs (`frozen=True, extra="forbid"`):
   - **`base.py`:** `BaseDTO` enforcing immutability and zero payload field drift.
-  - **`enums.py`:** Domain enumerations (`OrderStatusEnum`, `IntentEnum`, `RefundReasonCode`).
+  - **`enums.py`:** Domain enumerations (`OrderStatusEnum`, `IntentEnum`, `RefundReasonCode`, `AgentLifecycleState`).
   - **`email.py`:** `InboundEmailMessage` with email syntax validation.
   - **`extraction.py`:** `ExtractedDemand` and `ExtractedEntities` entities with regex validation and boundary schemas.
+  - **`session.py`:** `AgentSessionSnapshot` and `StateTransition` immutable session contracts with multi-tenancy `tenant_id` support.
   - **`tools.py`:** Standardized execution payloads (`OrderDetailsResult`, `ToolExecutionResult`).
   - **`response.py`:** Certified agent response contract (`AgentFinalResponse`).
 - **`domain/`:** Pure deterministic business rules:
@@ -36,7 +37,9 @@
   - **`erp_client.py`:** Mock ERP store accessor with Tenacity retry policies.
   - **`llm_client.py`:** LiteLLM / AsyncOpenAI client with structured output validation.
 - **`persistence/`:** State and audit logging:
-  - **`cache.py`:** Redis idempotency key caching (SHA-256) and TTL management.
+  - **`redis_client.py`:** Low-level Redis connection factory and serialization utilities.
+  - **`session_store.py`:** Thread-safe `SessionStateStore` managing session snapshots with tenant namespacing (`session:{tenant_id}:{session_id}`), TTL expiry, and memory fallback.
+  - **`cache.py`:** Redis idempotency key caching (`IdempotencyCache`, SHA-256) and session store re-exports.
   - **`repository.py`:** PostgreSQL audit log repository with JSON Lines fallback.
 - **`observability/`:** Telemetry and metrics:
   - **`logger.py`:** Structured JSON logging via `structlog`.
@@ -927,6 +930,202 @@ ZeroLLMAuthorityGuard.validate()
 3. **Negation-Aware Approval Clause Parsing:** The guard parses text on clause and sentence boundaries, checking for explicit negation tokens (`cannot`, `not`, `unable`, `refused`, `ineligible`). This allows the agent to safely convey statutory refusals (e.g. 14-day expired return refusals) without triggering false-positive escalations, while strictly intercepting unbacked affirmative approvals.
 4. **Defense-in-Depth Pipeline Integration:** Output validation operates as a dual gate: first within `synthesize_certified_response` in `src/agent/response_builder.py` prior to response packaging, and second via `guard_response` inside `ReActLoopEngine.run` before FSM state finalization.
 5. **Fail-Closed Response Neutralization:** If an authority breach is detected (e.g., prompted by an indirect prompt injection like TC-08), `guard_response` immediately overrides `status_resolution` to `REQUIRES_HUMAN_REVIEW`, populates `human_escalation_reason`, and replaces the uncertified email body with a neutral human handoff message, guaranteeing that no unauthorized commitments reach the customer.
+
+---
+
+### Redis Cache & Session State Store (`src/persistence/session_store.py`, `src/models/session.py`, `src/persistence/cache.py`)
+
+```text
+[ AgentSessionState (Mutable Container) ]
+        │
+        ├── 1. session.to_snapshot()
+        │       ├── Converts mutable tool_traces list ──► Immutable tuple[ToolCallTrace, ...]
+        │       ├── Converts mutable state_history list ──► Immutable tuple[StateTransition, ...]
+        │       └── Embeds explicit tenant_id ──► Multi-tenant partition tag
+        ▼
+[ AgentSessionSnapshot (BaseDTO, frozen=True, extra="forbid") ]
+        │
+        ├── 2. snapshot.model_dump_json()
+        │       └── Pydantic V2 native serialization (automatic ISO-8601 datetimes)
+        ▼
+SessionStateStore.save(session, ttl=900)
+        │
+        ├── 3. Build Namespaced Partition Key: "session:{tenant_id}:{session_id}"
+        │
+        ├── 4. Primary Distributed Storage (Redis):
+        │       ├── client.set("session:{tenant_id}:{session_id}", payload, ex=900)
+        │       └── Try / Catch Shielding ──► Log warning on socket timeout / connection drop
+        │
+        └── 5. Resilient Local Fallback (Memory):
+                └── _in_memory_store[key] = (payload, time.time() + 900)
+                        └── Active TTL eviction on retrieval (get / get_snapshot)
+```
+
+1. **State Snapshot Immutability (`AgentSessionSnapshot`):** Runtime ReAct execution mutates state dynamically (recording tool traces, updating FSM transitions, tracking token costs). When crossing persistence or API boundaries, `AgentSessionState` is converted via `to_snapshot()` into `AgentSessionSnapshot`, an immutable Pydantic V2 model derived from `BaseDTO` with `frozen=True, extra="forbid"`. This eliminates silent schema drift and guarantees tamper-proof caching across turns.
+2. **Multi-Tenant Namespaced Partitioning:** To comply with universal engineering guardrails, every session snapshot embeds a mandatory `tenant_id`. Redis storage keys are formatted as `session:{tenant_id}:{session_id}`, strictly isolating session state across distinct client organizations even when two tenants generate colliding session identifiers.
+3. **Two-Tier Resilient Storage with Active Memory Eviction:** The storage layer operates on a primary Redis client configured with defensive 200ms socket timeouts. If Redis is unavailable or experiences transient network drops, operations degrade transparently to an internal in-memory dictionary with timestamp-based TTL eviction, adhering to the "Zero Naked Crash" policy and supporting offline local development.
+4. **Lossless Bi-directional State Reconstruction:** `SessionStateStore.get_session()` loads the immutable snapshot from cache, validates the JSON contract via `AgentSessionSnapshot.model_validate_json()`, and reconstitutes a mutable `AgentSessionState` container via `AgentSessionState.from_snapshot()`. This preserves complete execution history, intermediate entity extractions, and tool traces across multi-turn customer dialogues.
+5. **Modular Architecture & File Limits:** Persistent state responsibilities are split into single-responsibility modules: `redis_client.py` handles low-level socket connections and JSON serialization, `session_store.py` manages session snapshots and multi-tenancy keys, and `cache.py` maintains tool execution idempotency hashing (`SHA-256`), ensuring all persistence files remain strictly below the 250 LOC threshold.
+
+---
+
+### Audit Log Repository & PostgreSQL JSONB Persistence (`src/persistence/repository.py`, `src/models/audit.py`, `src/persistence/postgres_client.py`)
+
+```text
+[ Agent Execution Concluded: AgentFinalResponse ]
+        │
+        ├── 1. AuditLogRecord.from_response(response, tenant_id, trace_data, ...)
+        │       ├── Immutable Domain DTO (BaseDTO, frozen=True, extra="forbid")
+        │       ├── FinOps Telemetry (tokens_prompt, tokens_completion, cost_usd)
+        │       ├── Execution Metrics (duration_ms = round(execution_time_seconds * 1000, 2))
+        │       └── Semi-Structured Execution Traces (trace_data: dict[str, Any])
+        ▼
+[ AuditLogRepository.save(record) ]
+        │
+        ├── 2. Primary Relational Storage (PostgreSQL):
+        │       ├── connect_postgres(postgres_dsn) (Exception Shielded)
+        │       ├── ensure_audit_table_exists(conn) ──► DDL with JSONB column & indices
+        │       ├── JSONB Stringification: params["trace_data"] = json.dumps(...)
+        │       ├── INSERT INTO agent_audit_logs (...)
+        │       └── On DB Timeout / Connection Failure:
+        │               └── Caught & Logged (logger.warning) ──► Zero Naked Crash
+        │
+        ├── 3. Resilient Append-Only Fallback (Local JSON Lines):
+        │       ├── payload = record.model_dump(mode="json")
+        │       └── open(fallback_path, "a").write(json.dumps(payload) + "\n")
+        │
+        └── 4. In-Memory Tracking:
+                └── _in_memory_records.append(record)
+```
+
+1. **Immutable Audit Trail Contract (`AuditLogRecord`):** Regulatory compliance and financial auditing require immutable records of all automated customer interactions. Derived from `BaseDTO` with `frozen=True` and `extra="forbid"`, `AuditLogRecord` captures the finalized intent, resolution status, confidence score, FinOps metrics (prompt and completion tokens, estimated USD cost), customer identifier, and full execution traces without allowing post-creation mutation.
+2. **Semi-Structured Trace Storage with Native JSONB:** Rather than rigidly normalizing arbitrary tool call arguments, nested intermediate reasoning steps, and state transition chains into multiple relational tables, execution traces are persisted as PostgreSQL `JSONB` in the `trace_data` column. This enables schema flexibility across evolving tool definitions while maintaining high query performance and JSON path indexability.
+3. **Zero Naked Crash Dual-Tier Persistence:** Operating in distributed or containerized cloud topologies requires resilience against database connection drops. `AuditLogRepository` probes PostgreSQL with defensive connection shielding. If the database connection is absent, driver dependencies (`psycopg`/`psycopg2`) are uninstalled, or an I/O timeout occurs, the repository logs a warning and appends the serialized audit record to `traces.jsonl`. This allows CLI evaluations, offline test suites, and live support requests to proceed uninterrupted.
+4. **Multi-Tenant Audit Isolation:** Every audit record binds a mandatory `tenant_id`. The database schema enforces a composite index `idx_audit_session_tenant ON agent_audit_logs(tenant_id, session_id)`, and repository retrieval methods (`get_by_session_id`) require tenant matching across both PostgreSQL queries and JSON Lines parsing. Records belonging to different tenants remain strictly segregated.
+5. **Separation of Concerns & File Size Boundaries:** Following universal engineering rules, raw SQL statements and DDL schemas are isolated in `postgres_client.py` (158 LOC), immutable domain schemas reside in `src/models/audit.py` (63 LOC), and high-level persistence orchestration is encapsulated in `src/persistence/repository.py` (213 LOC), keeping all files well below the 250 LOC threshold.
+
+---
+
+### Structured JSON Logging Pipeline & DualStreamWriter (`src/observability/logger.py`)
+
+```text
+[ Log Call: logger.info("order_status_queried", order_id="CMD-123", ...) ]
+        │
+        ├── 1. Zero-Allocation Level Filtering (make_filtering_bound_logger)
+        │       └── event_level < active_level? ──► Drop immediately (0 allocations)
+        │
+        ├── 2. Pipeline Processors:
+        │       ├── structlog.contextvars.merge_contextvars
+        │       │       └── Injects async task context (session_id, tenant_id, request_id)
+        │       ├── structlog.processors.add_log_level ──► {"level": "info"}
+        │       ├── structlog.processors.StackInfoRenderer ──► Injects stack traces if requested
+        │       ├── structlog.dev.set_exc_info & format_exc_info ──► Stringifies exceptions
+        │       ├── structlog.processors.TimeStamper(fmt="iso", utc=True) ──► UTC timestamp
+        │       └── structlog.processors.JSONRenderer(sort_keys=True, default=str)
+        │               └── Deterministic JSON stringification with non-primitive fallback
+        ▼
+[ DualStreamWriter.write(json_line) ]
+        │
+        ├── Primary Destination: stream (sys.stdout)
+        │       └── Direct stdout capture by container runtimes (Zero stdlib lock contention)
+        │
+        └── Optional Sink: file_path (traces.jsonl)
+                └── Shielded append with try/except ──► Zero Naked Crash on disk I/O errors
+```
+
+1. **High-Performance Direct Standard Output Streaming:** Enterprise container platforms (Docker, Kubernetes) standardize on `stdout` as the primary log aggregation interface. Rather than routing through Python's standard `logging` library—which introduces thread-level synchronization locks (`RLock`) and handler contention—`setup_logger` configures `structlog.PrintLoggerFactory` with `DualStreamWriter`. This ensures non-blocking, lock-free log writes with minimal overhead.
+2. **Context-Bound Telemetry via `contextvars`:** Multi-turn ReAct loops handle multiple concurrent user sessions across asynchronous event loops. Using `structlog.contextvars.merge_contextvars`, context attributes bound via `bind_contextvars(session_id=..., tenant_id=...)` automatically propagate into every log entry emitted within that coroutine context, ensuring complete distributed tracing without polluting business logic signatures with telemetry kwargs.
+3. **Bound Filtering Logger Performance:** Log level thresholds are enforced at the wrapper boundary via `structlog.make_filtering_bound_logger(level_num)`. Suppressed log levels (such as `DEBUG` logs in production environments) short-circuit immediately without executing pipeline processors or allocating string buffers, guaranteeing negligible latency overhead for dormant log points.
+4. **Defensive Object Serialization & "Zero Naked Crash":** To prevent logging operations from inadvertently crashing application workflows when non-serializable objects (such as `Path`, `UUID`, or domain DTOs) are passed as event metadata, the `JSONRenderer` is configured with `default=str` and `sort_keys=True`. Any unhandled object type is safely cast to string, ensuring deterministic JSON output and continuous operation under all edge cases.
+5. **Thread-Safe Dual Output Multiplexing:** `DualStreamWriter` inherits from `io.StringIO` to satisfy static typing contracts with `PrintLoggerFactory`. It routes formatted log lines to standard output and, when configured, simultaneously appends records to local audit logs (`traces.jsonl`). All secondary file I/O operations are shielded in exception guards to prevent disk space exhaustion or permission errors from disrupting customer-facing services.
+
+---
+
+### FinOps Token & Cost Calculator Pipeline (`src/observability/cost_tracker.py`, `src/models/llm.py`)
+
+```text
+[ Inbound Text / Messages / Token Counts ]
+        │
+        ├── 1. BPE Token Counting (tiktoken):
+        │       ├── resolve_encoding(model_name) (LRU Cached)
+        │       │       ├── Exact Model Encoding (e.g. o200k_base for gpt-4o, cl100k_base for gpt-4)
+        │       │       └── KeyError ──► Fallback to o200k_base
+        │       ├── encode(text, disallowed_special=()) ──► Safe against prompt injection tokens
+        │       └── Exception / Missing Driver ──► Fast heuristic fallback (~4 chars/token)
+        │
+        ├── 2. ChatML Framing Calculation:
+        │       ├── count_messages_tokens(messages)
+        │       └── Sums message content tokens + 3 per message + 3 priming tokens
+        │
+        ├── 3. Asymmetric USD Pricing Engine:
+        │       ├── resolve_pricing(model_name)
+        │       │       ├── Exact match or date-version prefix match (e.g. gpt-4o-mini-2024-07-18)
+        │       │       └── ModelPricing(input_per_million, output_per_million)
+        │       ├── C_in  = (prompt_tokens / 1,000,000) * input_per_million
+        │       ├── C_out = (completion_tokens / 1,000,000) * output_per_million
+        │       └── Total = round(C_in + C_out, 6) [Micro-dollar precision]
+        │
+        ▼
+[ TokenCostBreakdown / LLMUsage ]
+        │
+        ├── record_usage(prompt, completion) ──► Accumulates turn deltas
+        └── get_cumulative_usage() ──► Returns aggregate session spend for audit logging
+```
+
+1. **Subword BPE Precision via `tiktoken`:** Accurate FinOps tracking requires replicating the exact Byte Pair Encoding (BPE) algorithms utilized by OpenAI models. `FinOpsCostTracker` maps models to their native tokenizers (`o200k_base` for the GPT-4o family; `cl100k_base` for GPT-4 and GPT-3.5) with LRU caching to eliminate re-initialization overhead.
+2. **Defensive Special Token Ingestion:** By default, BPE tokenizers throw `DisallowedSpecialTokenError` when user text contains control sequences like `<|endoftext|>` or `<|im_start|>`. Passing `disallowed_special=()` instructs the encoder to treat control sequences as literal text, preventing malicious inputs from breaking token accounting or causing denial-of-service crashes.
+3. **Asymmetric Billing Model:** Commercial LLM architectures charge significantly higher rates for output generation than prompt ingestion. The calculator strictly separates input and output token volumes, applying formula $C_{\text{LLM\_in}} = (\text{tokens}_{\text{in}} / 10^6) \times R_{\text{in}}$ and $C_{\text{LLM\_out}} = (\text{tokens}_{\text{out}} / 10^6) \times R_{\text{out}}$, rounding to six decimal places for micro-dollar accuracy and eliminating blended rate distortions.
+4. **ChatML Framing Token Accounting:** Estimating prompt tokens before transmission requires accounting for conversational metadata delimiters. `count_messages_tokens` incorporates the standard 3-token per-message framing overhead and the 3-token assistant reply priming sequence, preventing token truncation and context window miscalculations.
+5. **Session-Level Cumulative Ledger:** To support budget governance across multi-turn ReAct loops, `record_usage()` accumulates prompt and completion metrics across turns. Calling `get_cumulative_usage()` produces an immutable `LLMUsage` snapshot containing total prompt tokens, completion tokens, and aggregate dollar expenditure for persistence in the audit database.
+
+---
+
+### OpenInference & OpenTelemetry Tracing Adapter (`src/observability/tracer.py`, `src/observability/span.py`, `src/observability/exporter.py`)
+
+The distributed tracing adapter captures fine-grained execution latency, tool invocations, and LLM reasoning steps conforming to OpenInference semantic conventions and providing seamless dual export to OpenTelemetry and Langfuse:
+
+```
+[ Inbound Session Execution ]
+        │
+        ▼
+[ AgentTracer.agent_span("agent_run") ] ──► Pushes root span to _span_stack (parent_id=None)
+        │
+        ├── 1. OpenTelemetry Mirroring:
+        │       ├── Attempts opentelemetry.trace.get_tracer(service_name)
+        │       ├── Starts native OTel span with openinference.span.kind="AGENT"
+        │       └── Gracefully catches any OTel buffer or configuration faults
+        │
+        ├── 2. ReAct Loop Tool Invocations:
+        │       ├── AgentTracer.tool_span("get_order_details", arguments={...})
+        │       │       ├── Automatically detects parent_id from _span_stack top
+        │       │       ├── Yields mutable ActiveSpan (set_input, set_output, set_attribute)
+        │       │       └── finally: computes duration_ms, pops stack, appends TraceSpanRecord
+        │       └── record_tool_call_trace(ToolCallTrace) ──► Bridges domain traces directly
+        │
+        ├── 3. LLM Inference Tracking:
+        │       ├── AgentTracer.llm_span("gpt-4o-mini", prompt=...)
+        │       │       ├── ActiveSpan.record_tokens(prompt, completion)
+        │       │       └── Sets openinference.span.kind="LLM", llm.model_name, token counts
+        │       └── Unhandled Exception ──► ActiveSpan.set_error(), marks status=ERROR, re-raises
+        │
+        ▼
+[ Export & Ingestion Serialization ]
+        │
+        ├── export_openinference() ──► JSON array formatted to OpenInference specs
+        ├── export_langfuse_traces() ──► Envelope with sessionId, userId, observations (SPAN, GENERATION, EVENT)
+        └── to_trace_summary() ──► Aggregate metrics (total_spans, tool_count, llm_count, errors)
+```
+
+1. **OpenInference Standardization:** By adhering strictly to OpenInference semantic conventions (`openinference.span.kind`, `tool.parameters`, `llm.token_count.*`), the system decouples agent orchestration from proprietary telemetry vendors. The resulting traces can be ingested interchangeably by Langfuse, Arize Phoenix, or generic OpenTelemetry collectors without application refactoring.
+2. **Automated Hierarchical Span Stacking:** Manual parent-child span linking creates brittle parameter coupling across application layers. `AgentTracer` encapsulates an internal LIFO stack (`_span_stack`). Entering any nested span context (`tool_span`, `llm_span`) automatically inherits the parent span ID from the top of the stack, ensuring perfectly nested execution trees across multi-turn ReAct reasoning loops.
+3. **In-Flight Mutability to Immutable Domain Snapshot:** The architecture cleanly decouples the in-flight mutable execution state (`ActiveSpan`) from the final persisted telemetry snapshot. While executing, the active span dynamically accepts inputs, outputs, tokens, and error states; upon block exit, the context manager freezes these attributes into an immutable `TraceSpanRecord` (`frozen=True, extra="forbid"`).
+4. **Resilient Dual-Target Exporter Engine:** The `exporter.py` module isolates formatting mechanics from runtime execution. It provides distinct transformation pipelines for standard OpenInference dictionaries, Langfuse observation payloads (distinguishing `SPAN`, `GENERATION`, and `EVENT`), and session-level telemetry summaries without altering core tracing state.
+5. **Zero Naked Crash Telemetry Shielding:** Observability infrastructure must never cause service outages. `AgentTracer` wraps OpenTelemetry tracer initialization, span attribute injection, and exception recording in defensive try-except blocks. If an upstream OpenTelemetry collector overflows or network drivers fail, tracing silently degrades to local memory and structured structlog events while keeping customer workflows intact.
+
+
+
+
+
 
 
 

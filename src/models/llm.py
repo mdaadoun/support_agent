@@ -6,7 +6,31 @@ from pydantic import Field
 
 from models.base import BaseDTO
 
-__all__ = ["LLMResponse", "LLMToolCall", "LLMUsage"]
+__all__ = [
+    "LLMResponse",
+    "LLMToolCall",
+    "LLMUsage",
+    "ModelPricing",
+    "TokenCostBreakdown",
+]
+
+
+class ModelPricing(BaseDTO):
+    """Pricing rates per million tokens in USD."""
+
+    input_per_million: float = Field(ge=0.0)
+    output_per_million: float = Field(ge=0.0)
+
+
+class TokenCostBreakdown(BaseDTO):
+    """Detailed FinOps cost breakdown across prompt and completion tokens."""
+
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    input_cost_usd: float = Field(default=0.0, ge=0.0)
+    output_cost_usd: float = Field(default=0.0, ge=0.0)
+    total_cost_usd: float = Field(default=0.0, ge=0.0)
 
 
 class LLMToolCall(BaseDTO):

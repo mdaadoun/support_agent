@@ -1,30 +1,25 @@
 """Idempotency and session caching layer with memory fallback."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import time
-from datetime import date, datetime
 from typing import Any
 
 from core.config import get_settings
 from models.tools import ToolExecutionResult
 from observability.logger import get_logger
-
-try:
-    import redis
-except ImportError:  # pragma: no cover
-    redis = None  # type: ignore[assignment]
+from persistence.redis_client import connect_redis, json_serializer
+from persistence.session_store import SessionCache, SessionStateStore
 
 logger = get_logger(__name__)
 
-
-def _json_serializer(obj: Any) -> Any:
-    """Normalize complex types into JSON-serializable primitives."""
-    if isinstance(obj, datetime | date):
-        return obj.isoformat()
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(mode="json")
-    return str(obj)
+__all__ = [
+    "IdempotencyCache",
+    "SessionCache",
+    "SessionStateStore",
+]
 
 
 class IdempotencyCache:
@@ -44,33 +39,16 @@ class IdempotencyCache:
         self._in_memory_store: dict[str, tuple[str, float]] = {}
 
     def _get_redis(self) -> Any | None:
-        """Lazily initialize Redis client if not already provided."""
         if self._redis_initialized:
             return self._redis
         self._redis_initialized = True
-        if redis is None:
-            return None
-        try:
-            client = redis.Redis.from_url(
-                self._redis_url,
-                socket_timeout=0.2,
-                socket_connect_timeout=0.2,
-                decode_responses=True,
-            )
-            client.ping()
-            self._redis = client
-            logger.info("redis_cache_connected", url=self._redis_url)
-        except Exception as exc:
-            logger.debug("redis_connection_skipped_using_memory", error=str(exc))
-            self._redis = None
+        self._redis = connect_redis(self._redis_url)
         return self._redis
 
     @staticmethod
     def compute_key(session_id: str, tool_name: str, arguments: dict[str, Any]) -> str:
         """Derive deterministic SHA-256 hash key for session and tool arguments."""
-        normalized_args = json.dumps(
-            arguments, sort_keys=True, default=_json_serializer
-        )
+        normalized_args = json.dumps(arguments, sort_keys=True, default=json_serializer)
         raw_key = f"{session_id}:{tool_name}:{normalized_args}"
         return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 

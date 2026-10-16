@@ -441,5 +441,90 @@ A syntactic analysis pattern distinguishing legitimate refusal explanations from
 ### Fail-Closed Response Neutralization
 A defensive safety mitigation replacing hallucinated or injection-compromised response text with a clean, standardized human handoff notification upon detecting an authority breach.
 
+---
+
+## 💾 17. Session State Persistence & Multi-Tenancy
+
+### Session State Store (`SessionStateStore`)
+A thread-safe persistence adapter responsible for storing, retrieving, and evicting agent session snapshots (`AgentSessionSnapshot`) across ReAct conversational turns with Redis storage and memory fallback.
+
+### Agent Session Snapshot (`AgentSessionSnapshot`)
+An immutable, frozen Pydantic V2 data transfer object capturing the complete serializable state of an active agent support session, including inbound message, lifecycle state, entities, tool traces, and state transition history.
+
+### Tenant Key Namespacing
+A multi-tenancy partition pattern formatting Redis keys as `session:{tenant_id}:{session_id}`, guaranteeing data isolation across organizations at the storage boundary.
+
+### Two-Tier Cache Degradation
+A resilience pattern where distributed cache operations (Redis) automatically and transparently degrade to an in-memory dictionary during transient outages or missing infrastructure.
+
+---
+
+## 🗄️ 18. Audit Trail & Relational Persistence
+
+### Audit Log Repository
+Persistence component responsible for storing immutable historical records of agent runs, user communications, and decisions for regulatory compliance, security audits, and financial accounting.
+
+### JSONB Trace Payload
+Decomposed binary JSON format in PostgreSQL utilized to persist dynamic agent execution traces, tool arguments, and diagnostic metadata with high read/write performance and path indexing.
+
+### Zero Naked Crash Persistence
+Architectural principle ensuring repository and database operations handle connection timeouts and infrastructural partitions defensively without crashing user-facing application threads.
+
+### Append-Only Traces Fallback
+Local JSON Lines (`traces.jsonl`) append fallback strategy that guarantees auditability even when external relational storage is inaccessible or unconfigured.
+
+---
+
+## 📊 19. Structured Logging & Observability
+
+### Structured JSON Logging
+A logging paradigm where log entries are emitted as structured, machine-parsable JSON objects containing standardized keys (timestamp, level, event, logger) alongside dynamic contextual attributes.
+
+### Contextvars Merge Processor
+A structlog pipeline processor that automatically merges asynchronous task-local context variables into the active event dictionary before serialization.
+
+### Filtering Bound Logger
+A specialized structlog wrapper class configured with an integer log level threshold that short-circuits disabled log calls before executing any pipeline processors.
+
+### Dual Stream Writer
+A stream output adapter multiplexing log lines between primary standard output (`sys.stdout`) and persistent file storage (`traces.jsonl`) with exception shielding.
+
+---
+
+## 💰 20. FinOps & Token Telemetry
+
+### FinOps Cost Tracker
+An observability component responsible for computing token usage, applying model-specific pricing rates, and tracking real-time dollar expenditure across agent execution sessions.
+
+### Byte Pair Encoding (BPE)
+A compression and tokenization algorithm that breaks text into statistical subword units used by modern language models (e.g. tiktoken's `o200k_base` and `cl100k_base`).
+
+### ChatML Overhead Framing
+The fixed token overhead introduced by conversational role delimiters and turn separators when formatting messages for chat-based LLM APIs.
+
+### Token Cost Breakdown
+An immutable financial audit entity detailing prompt tokens, completion tokens, input cost, output cost, and total USD expenditure.
+
+---
+
+## 🔍 21. OpenInference & Distributed Tracing
+
+### OpenInference Semantic Conventions
+An open standard defining attribute keys and span kinds (AGENT, TOOL, LLM, CHAIN) for instrumenting AI agent workflows and large language model interactions within OpenTelemetry.
+
+### Hierarchical Span Stack
+An internal stack structure within the tracer that automatically links child spans (such as tool calls or LLM queries) to their enclosing parent agent reasoning context.
+
+### Langfuse Trace Envelope
+A structured JSON telemetry schema containing root session metadata, user/tenant identifiers, and an array of nested observations (SPAN, GENERATION, EVENT) formatted for Langfuse API ingestion.
+
+### Active Span Context
+A mutable runtime handle yielded by tracer context managers allowing caller code to incrementally attach inputs, outputs, tokens, and error states before final immutable snapshotting.
+
+
+
+
+
+
 
 

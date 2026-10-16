@@ -469,4 +469,101 @@ When an authority violation is detected (e.g., an uncertified €500 figure or u
 3. Neutralizes the customer email body to a safe human-handoff message, preventing uncertified promises from reaching the customer.
 4. Transitions the FSM state from `GENERATING_RESPONSE` to `REQUIRES_HUMAN`.
 
+---
+
+### Q75: Why decouple the mutable `AgentSessionState` dataclass from the immutable `AgentSessionSnapshot` DTO instead of serializing the dataclass directly?
+**Answer:**
+During agent execution, the session state requires mutability to efficiently record tool traces, append state transitions, and increment iteration counters. However, at persistence and API boundaries, mutability introduces risks of accidental state tampering and concurrency race conditions. By decoupling the runtime container (`AgentSessionState`) from an immutable Pydantic V2 DTO (`AgentSessionSnapshot` inheriting from `BaseDTO` with `frozen=True` and `extra="forbid"`), we enforce schema invariance, eliminate schema drift, and guarantee that cached state snapshots cannot be modified after serialization.
+
+---
+
+### Q76: How does the two-tier cache degradation strategy uphold the "Zero Naked Crash" principle while balancing consistency and availability?
+**Answer:**
+In distributed cloud environments, external cache services (like Redis) can encounter socket timeouts, connection drops, or rate limits. Rather than allowing raw third-party driver exceptions (`redis.RedisError`, `TimeoutError`) to propagate up the stack and crash the agent or API thread, the `SessionStateStore` sets defensive 200ms socket timeouts and wraps all Redis I/O in exception shields. When a network fault occurs, it logs a structured warning and commits the session snapshot to a local in-memory dictionary with active timestamp eviction. This guarantees high availability and uninterrupted customer request processing while preserving offline testing capabilities without external dependencies.
+
+---
+
+### Q77: How is multi-tenancy enforced at the caching and persistence layer in this design?
+**Answer:**
+Multi-tenancy is enforced through defense-in-depth across two distinct layers:
+1. **Key Partitioning:** Storage keys are namespaced with the organization identifier (`session:{tenant_id}:{session_id}`), preventing key collision and data contamination even when two tenants generate identical session IDs.
+2. **Payload Embedding:** The `tenant_id` is an explicit, immutable field on `AgentSessionSnapshot`. When records are retrieved and validated, the tenant ownership is retained throughout all downstream trace logging and auditing pipelines.
+
+---
+
+### Q78: Why does the audit log schema store execution traces as JSONB rather than fully normalized SQL tables?
+**Answer:**
+Autonomous agents generate variable-length, nested execution traces consisting of dynamic tool names, arbitrary payload schemas, and multi-turn reasoning steps. Normalizing every trace property into distinct SQL tables introduces high relational overhead, complex joins, and rigid migration burdens whenever new tools or telemetry properties are added. PostgreSQL's JSONB format provides atomic single-statement persistence, native JSON indexability (GIN indexing), and schema flexibility without sacrificing search performance.
+
+---
+
+### Q79: How does AuditLogRepository maintain zero-downtime resilience and local offline development capability?
+**Answer:**
+The repository implements a two-tier persistence design. It attempts primary persistence to PostgreSQL; if the database is unconfigured, driver libraries (`psycopg`/`psycopg2`) are absent, or network timeouts occur, the repository catches the exception, logs a diagnostic warning, and appends the JSON-serialized audit record to local `traces.jsonl`. This allows CLI evaluation, unit tests, and CI/CD pipelines to run deterministically without external Docker dependencies while protecting live customer workflows.
+
+---
+
+### Q80: How is multi-tenant isolation guaranteed in the audit database?
+**Answer:**
+Every `AuditLogRecord` requires an explicit `tenant_id` field. The PostgreSQL table enforces a composite index `idx_audit_session_tenant ON agent_audit_logs(tenant_id, session_id)`, and all repository queries (`get_by_session_id`) mandate matching both `session_id` and `tenant_id`. Records belonging to differing tenants cannot collide or be queried across organizational boundaries.
+
+---
+
+### Q81: Why does the structured logger use `structlog.PrintLoggerFactory` rather than routing through Python's standard `logging` module?
+**Answer:**
+Python's built-in `logging` module employs thread-level synchronization locks (`RLock`) on log handlers, which introduces lock contention and latency degradation under high concurrency in async event loops. `PrintLoggerFactory` writes formatted JSON lines directly to `sys.stdout` without entering the standard logging lock hierarchy. In modern containerized architectures (Docker, Kubernetes), stdout is the standard contract for log scraping by daemonsets (FluentBit, Vector), making direct stdout streaming faster, simpler, and less error-prone.
+
+---
+
+### Q82: How do `contextvars` prevent telemetry pollution across concurrent ReAct agent sessions?
+**Answer:**
+Python's `contextvars` module provides thread-safe and coroutine-safe task-local storage. When an incoming request arrives, the ingress handler or controller binds `session_id` and `tenant_id` via `bind_contextvars()`. Because each asynchronous task manages its own `Context` copy, concurrent agent sessions running on the same event loop maintain complete telemetry isolation without cross-session contamination or needing to pass telemetry IDs through every domain function signature.
+
+---
+
+### Q83: How does the logger implementation guarantee 'Zero Naked Crash' when handling non-serializable objects or disk I/O errors?
+**Answer:**
+The logger implements dual-layer defensive guards: first, `structlog.processors.JSONRenderer` is initialized with `default=str`, which automatically converts arbitrary non-JSON types (such as `Path`, `UUID`, or custom domain objects) into strings rather than raising a fatal `TypeError`. Second, `DualStreamWriter` wraps file write operations in a shielded try-except block, guaranteeing that temporary disk full errors or file permission issues never crash user-facing customer support workflows.
+
+---
+
+### Q84: Why is BPE token counting with `disallowed_special=()` necessary when processing untrusted customer inputs?
+**Answer:**
+Language models use special control tokens (e.g. `<|endoftext|>`, `<|im_start|>`) to demarcate documents and conversation boundaries. By default, standard tokenizers raise a `DisallowedSpecialTokenError` if these raw substrings appear in user input, creating a denial-of-service vector where malicious email text crashes the token calculator. Passing `disallowed_special=()` forces the tokenizer to treat all special sequences as regular literal text, preserving both security and deterministic token accounting.
+
+---
+
+### Q85: Why must prompt and completion tokens be calculated with asymmetric rates ($C_{\text{in}} \ne C_{\text{out}}$)?
+**Answer:**
+Modern LLM providers (including OpenAI and Anthropic) price generation output at 3x to 4x the rate of prompt input (e.g. GPT-4o-mini charges \$0.15/1M input vs. \$0.60/1M output; GPT-4o charges \$2.50/1M input vs. \$10.00/1M output). Computing costs using a blended average or symmetric token rate produces significant financial distortion in autonomous ReAct loops, where long system prompts and short tool calls drastically skew the input-to-output ratio. Calculating $C_{\text{LLM\_in}} = (\text{tokens}_{\text{in}} / 10^6) \times R_{\text{in}}$ and $C_{\text{LLM\_out}} = (\text{tokens}_{\text{out}} / 10^6) \times R_{\text{out}}$ ensures exact ledger reconciliation.
+
+---
+
+### Q86: How does the cost tracker maintain session-level budget governance across multi-turn ReAct reasoning loops?
+**Answer:**
+The `FinOpsCostTracker` maintains stateful cumulative counters (`_total_prompt_tokens`, `_total_completion_tokens`). Each time the agent executes an LLM inference cycle, `record_usage()` accumulates the delta and computes an updated `TokenCostBreakdown`. When the loop finishes, `get_cumulative_usage()` emits an immutable `LLMUsage` snapshot containing total prompt tokens, completion tokens, and aggregate USD spend, which is persisted to the audit database and checked against budget guardrails.
+
+---
+
+### Q87: Why did we standardize on OpenInference semantic attributes rather than tightly coupling to proprietary vendor SDKs?
+**Answer:**
+Standardizing on OpenInference semantic attributes (`openinference.span.kind`, `tool.parameters`, `llm.token_count.*`) keeps the core domain and tool runtime decoupled from external telemetry vendors. It allows our support agent to emit traces compatible with any OTel-compliant backend (Langfuse, Arize Phoenix, Datadog, Honeycomb) via standard exporters, while avoiding heavy vendor runtime dependencies and allowing zero-network unit tests to execute cleanly.
+
+---
+
+### Q88: How does `AgentTracer` safely resolve nested parent-child span relationships without requiring developers to manually pass `parent_span_id`?
+**Answer:**
+The tracer maintains an internal span ID stack (`_span_stack`). When entering `tracer.span()` or specialized context managers (`agent_span`, `tool_span`, `llm_span`), it inspects the top of the stack to assign `parent_span_id` automatically before pushing the new span ID. In the `finally` block, the span ID is popped from the stack. This guarantees accurate hierarchical tree structures for multi-step ReAct loops without polluting business logic signatures.
+
+---
+
+### Q89: How does the tracing adapter enforce the 'Zero Naked Crash' principle when third-party OpenTelemetry exporters encounter exceptions or when OTel is unconfigured?
+**Answer:**
+The tracer wraps all OpenTelemetry API interactions in shielded try-except blocks. If `opentelemetry.trace` is absent or the tracer provider fails, `_otel_tracer` degrades to `None`. During span execution, any OTel buffer overflow or attribute type failure is intercepted without interrupting the application thread. Regardless of external OTel health, `AgentTracer` reliably persists the immutable `TraceSpanRecord` locally and logs structured events via `structlog`.
+
+
+
+
+
+
 

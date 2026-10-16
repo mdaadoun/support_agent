@@ -21,6 +21,7 @@ from agent.response_builder import (
 )
 from agent.state import (
     AgentLifecycleState,
+    AgentSessionSnapshot,
     AgentSessionState,
     StateTransition,
     create_session,
@@ -31,6 +32,7 @@ __all__ = [
     "AGENT_SYSTEM_PROMPT",
     "AgentFSMController",
     "AgentLifecycleState",
+    "AgentSessionSnapshot",
     "AgentSessionState",
     "EXTRACTION_SYSTEM_PROMPT",
     "LLMClientProtocol",

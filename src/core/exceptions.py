@@ -3,6 +3,7 @@
 __all__ = [
     "AppBaseError",
     "BusinessRuleViolationError",
+    "CacheError",
     "CircuitBreakerError",
     "ConfigurationError",
     "FSMStateError",
@@ -12,9 +13,12 @@ __all__ = [
     "LLMResponseValidationError",
     "LLMTimeoutError",
     "OrderNotFoundError",
+    "PersistenceError",
     "SecurityAccessError",
+    "SessionNotFoundError",
     "SupportAgentBaseError",
     "ToolExecutionError",
+    "TracingError",
 ]
 
 
@@ -118,3 +122,34 @@ class LLMAuthorityViolationError(SupportAgentBaseError):
     def __init__(self, message: str, violations: tuple[str, ...] = ()) -> None:
         super().__init__(message, error_code="LLM_AUTHORITY_VIOLATION")
         self.violations = violations
+
+
+class PersistenceError(SupportAgentBaseError):
+    """Raised when persistence or storage operations encounter failures."""
+
+    def __init__(self, message: str, error_code: str = "PERSISTENCE_ERROR") -> None:
+        super().__init__(message, error_code=error_code)
+
+
+class CacheError(PersistenceError):
+    """Raised when Redis or in-memory caching operations fail."""
+
+    def __init__(self, message: str, error_code: str = "CACHE_ERROR") -> None:
+        super().__init__(message, error_code=error_code)
+
+
+class SessionNotFoundError(PersistenceError):
+    """Raised when a requested session cannot be found in persistent storage."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            f"Session '{session_id}' not found.", error_code="SESSION_NOT_FOUND"
+        )
+        self.session_id = session_id
+
+
+class TracingError(SupportAgentBaseError):
+    """Raised when OpenInference or OpenTelemetry tracing operations fail."""
+
+    def __init__(self, message: str, error_code: str = "TRACING_ERROR") -> None:
+        super().__init__(message, error_code=error_code)
