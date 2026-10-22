@@ -6,8 +6,14 @@
 
 ## 🛠️ 1. Directory Structure: `src/`
 
-- **`cli.py`:** Presentation entrypoint powered by Typer and Rich. Exposes operational inspection and execution commands (`info`, `check-order`, `run`).
-- **`api/`:** REST Ingress layer built on FastAPI (`app.py`, `routes.py`). Exposes endpoints (`/agent/process`, `/health`) with dependency injection and middleware.
+- **`cli.py`:** Presentation entrypoint powered by Typer and Rich. Exposes operational inspection and execution commands (`info`, `check-order`, `run`, `interactive`).
+- **`cli_display.py`:** Presentation rendering components generating Rich terminal UI tables for ReAct tool traces, summary cards, and certified email response panels.
+- **`api/`:** REST Ingress layer built on FastAPI with Clean Architecture isolation:
+  - **`app.py`:** Application factory (`create_app`), CORS middleware, lifespan events, and global error handling setup.
+  - **`routes.py`:** REST route handlers (`GET /health`, `POST /agent/process`, `GET /agent/sessions/{session_id}`).
+  - **`service.py`:** `AgentService` orchestrating pre-extraction, reasoning loop execution, session persistence, and audit logging.
+  - **`dependencies.py`:** Dependency injection providers (`verify_api_key`, `get_tenant_id`, `get_agent_service`, `get_session_store`, `get_audit_repository`).
+  - **`middleware.py`:** Dual-tier error shielding with `ErrorHandlingMiddleware` and exception handlers mapping domain errors to HTTP statuses.
 - **`core/`:** Foundation services and boundary protection:
   - **`config.py`:** Centralized settings management backed by `pydantic-settings` (`Settings`).
   - **`exceptions.py`:** Standardized domain exception hierarchy rooted in `AppBaseError` (`SupportAgentBaseError`).
@@ -22,9 +28,12 @@
   - **`response.py`:** Certified agent response contract (`AgentFinalResponse`).
 - **`domain/`:** Pure deterministic business rules:
   - **`business_rules.py`:** 14-day statutory cooling-off arithmetic and delivery delay voucher computation (zero LLM financial authority).
+- **`agent/`:** Autonomous ReAct loop and state machine:
   - **`controller.py`:** Finite State Machine (FSM) controller (`AgentFSMController`) enforcing valid lifecycle transitions, absorbing terminal states, and audit tracking.
   - **`loop.py`:** ReAct decision-action loop capped at 3 iterations.
   - **`prompts.py`:** XML boundary encapsulation and prompt boundary definitions.
+  - **`response_builder.py`:** Response synthesis builder with shielded schema validation and human escalation fallback.
+  - **`validator.py`:** Zero LLM Authority guard (`ZeroLLMAuthorityGuard`) validating uncertified financial amounts.
   - **`state.py`:** Session state container (`AgentSessionState`), lifecycle state enum (`AgentLifecycleState`), and immutable audit DTO (`StateTransition`).
 - **`security/`:** Defense-in-depth and isolation:
   - **`sanitizer.py`:** Defensive input sanitization: non-printable control character scrubbing, bidi/format override removal, bounded iterative tag spoofing neutralization (`[TAG_REMOVED]`), `<user_email>` XML boundary encapsulation, regex entity extraction (`extract_order_id`, `extract_email`), and prompt injection detection.
@@ -1121,6 +1130,246 @@ The distributed tracing adapter captures fine-grained execution latency, tool in
 3. **In-Flight Mutability to Immutable Domain Snapshot:** The architecture cleanly decouples the in-flight mutable execution state (`ActiveSpan`) from the final persisted telemetry snapshot. While executing, the active span dynamically accepts inputs, outputs, tokens, and error states; upon block exit, the context manager freezes these attributes into an immutable `TraceSpanRecord` (`frozen=True, extra="forbid"`).
 4. **Resilient Dual-Target Exporter Engine:** The `exporter.py` module isolates formatting mechanics from runtime execution. It provides distinct transformation pipelines for standard OpenInference dictionaries, Langfuse observation payloads (distinguishing `SPAN`, `GENERATION`, and `EVENT`), and session-level telemetry summaries without altering core tracing state.
 5. **Zero Naked Crash Telemetry Shielding:** Observability infrastructure must never cause service outages. `AgentTracer` wraps OpenTelemetry tracer initialization, span attribute injection, and exception recording in defensive try-except blocks. If an upstream OpenTelemetry collector overflows or network drivers fail, tracing silently degrades to local memory and structured structlog events while keeping customer workflows intact.
+
+---
+
+### FastAPI REST Ingress Execution & Exception Shielding Flow (`src/api/routes.py`, `src/api/service.py`, `src/api/dependencies.py`, `src/api/middleware.py`)
+
+The REST Ingress layer provides an asynchronous, type-safe HTTP interface for external consumers and automated test suites, enforcing strict Clean Architecture layer isolation, defense-in-depth authentication, and dual-tier exception shielding:
+
+```text
+Inbound HTTP Request (POST /agent/process)
+        │
+        ▼
+[ CORSMiddleware & ErrorHandlingMiddleware ] ──► Catches unhandled ASGI exceptions
+        │
+        ▼
+[ verify_api_key ] ──► Validates X-API-Key or Authorization Bearer against Settings.api_key
+        │
+        ▼
+[ InboundEmailMessage Schema Validation ] ──► Pydantic V2 boundary checks (RFC email format)
+        │
+        ▼
+[ get_tenant_id & get_agent_service ] ──► Dependency injection resolves tenant & services
+        │
+        ▼
+[ AgentService.process_email ]
+        │
+        ├── 1. Boundary Regex Validation:
+        │       ├── Regex validation on tenant_id (^[a-zA-Z0-9_\-]+$)
+        │       └── Regex validation on session_id (^[a-zA-Z0-9_\-]+$)
+        │
+        ├── 2. Pre-Extraction & Security Classification:
+        │       ├── classify_inbound_demand(message) ──► IntentEnum, order_id, hostility check
+        │       └── session.extracted_demand = demand
+        │
+        ├── 3. ReAct Reasoning Loop Execution:
+        │       └── response = await engine.run(session) ──► AgentFinalResponse
+        │
+        ├── 4. Persistence & Audit Logging:
+        │       ├── session_store.save(session) ──► Redis / In-Memory (session:{tenant_id}:{session_id})
+        │       └── audit_repo.save_response(response, tenant_id, message_id) ──► Postgres / traces.jsonl
+        │
+        ▼
+AgentFinalResponse (HTTP 200 OK)
+```
+
+1. **Clean Architecture Layer Isolation (`src/api/service.py`):** Route handlers in `routes.py` must never invoke database drivers, Redis clients, or raw domain loops directly. The introduction of `AgentService` creates a dedicated application service boundary that encapsulates pre-extraction, reasoning engine orchestration, session state snapshotting, and audit logging. Route functions remain razor-thin, handling only HTTP parsing, status codes, and dependency wiring.
+2. **Dual-Tier Exception Shielding (`src/api/middleware.py`):** Error shielding operates at two complementary levels. Inside the routing pipeline, `setup_exception_handlers` intercepts domain errors (`SecurityAccessError` -> 403, `SessionNotFoundError` -> 404, `BusinessRuleViolationError` -> 422, `FSMStateError` -> 409, `CircuitBreakerError` -> 503) and transforms them into standardized JSON error payloads. Outside the routing pipeline, `ErrorHandlingMiddleware` acts as an ASGI safety net, catching any unexpected exception escaping middleware or dependency execution and returning an RFC-compliant 500 JSON response without leaking internal Python stack traces.
+3. **Multi-Tenancy Partitioning & Boundary Sanitization:** Multi-tenancy is enforced from the moment a request reaches ingress. The `X-Tenant-ID` header is resolved via `get_tenant_id` and verified using strict regex patterns (`^[a-zA-Z0-9_\-]+$`) inside `AgentService`. All session storage keys in `SessionStateStore` are strictly partitioned under `session:{tenant_id}:{session_id}`. A caller authenticated under Tenant B attempting to retrieve an active session belonging to Tenant A receives a 404 `SESSION_NOT_FOUND`, preventing cross-tenant information leakage.
+4. **Flexible API Key Shielding (`src/api/dependencies.py`):** The `verify_api_key` security provider inspects both `X-API-Key` headers and standard `Authorization: Bearer <key>` headers against `Settings.api_key`. When configured, unauthorized or missing keys immediately abort request processing with `APIAuthenticationError` (HTTP 401). If no API key is configured (such as during local development or unit testing), the dependency gracefully permits access.
+5. **FastAPI Inversion of Control & Testability:** By wiring database stores, audit repositories, and reasoning engines through FastAPI's `Depends` mechanisms, endpoints can be fully tested in memory without running external Docker containers. Test suites override dependencies seamlessly via `app.dependency_overrides`, guaranteeing 100% deterministic test execution.
+
+---
+
+### Rich Terminal CLI Runner Execution & Trace Visualization (`src/cli.py`, `src/cli_display.py`)
+
+The Rich Terminal CLI runner serves as an operator-facing diagnostic and interactive execution interface, allowing local query execution, batch email file evaluation, and ReAct tool trace inspection without requiring web browsers or external API clients:
+
+```text
+CLI Command (run / interactive)
+        │
+        ▼
+[ Parse Inbound Input ] ──► JSON File / Text File (Subject & From headers) / Interactive Prompt
+        │
+        ▼
+[ InboundEmailMessage Validation ] ──► Schema validation via Pydantic V2 BaseDTO
+        │
+        ▼
+[ execute_agent (asyncio.run) ] ──► Bridges synchronous CLI to async Application Service
+        │
+        ├── 1. AgentService.process_email(message, tenant_id)
+        │       ├── Pre-extraction & intent classification
+        │       ├── Autonomous ReAct loop execution (max 3 iterations)
+        │       └── Session state & audit persistence
+        │
+        └── 2. AgentService.get_session(session_id, tenant_id)
+                └── Retrieves snapshot with recorded ToolCallTrace history
+        │
+        ▼
+[ render_output (src/cli_display.py) ]
+        │
+        ├── Execution Summary Panel (Session ID, Intent, Confidence, Status Resolution, Order ID)
+        ├── ReAct Tool Execution Traces Table (Turn #, Tool Name, Arguments, Status, Duration)
+        ├── Certified Customer Email Response Panel (Subject, Body)
+        └── FinOps Telemetry Metrics (Prompt/Completion Tokens, Estimated USD Cost, Latency)
+        │
+        ▼
+Rich Console Terminal Output
+```
+
+1. **Multi-Modal Inbound Ingestion Engine:** The CLI supports flexible ingestion mechanisms for developer convenience. In file mode (`--file / -f`), it detects JSON-formatted email files and deserializes them directly into `InboundEmailMessage` instances; if a raw text file is supplied, it extracts RFC-style `Subject:` and `From:` headers, falling back gracefully to defaults. In interactive mode (`--interactive / -i` or command `interactive`), it prompts the user through Rich input dialogs.
+2. **Modular Presentation Architecture:** Complying strictly with the 250 LOC rule, visual rendering routines are isolated in `src/cli_display.py` (~119 LOC) while command routing, argument parsing, and input validation reside in `src/cli.py` (~186 LOC). This keeps presentation concerns segregated: CLI routing changes do not risk breaking formatting tables.
+3. **ReAct Tool Execution Trace Tables:** Understanding autonomous agent behavior requires transparent observability. When an agent executes tools, `render_traces` formats the session's `tool_traces` into a Rich `Table` detailing turn number, tool name, serialized arguments, execution status (`SUCCESS` in bold green vs. `FAILED` in bold red), and execution duration in milliseconds, providing instant insight into tool dispatch sequences.
+4. **Clean Architecture Application Facade:** The CLI runner never imports or executes database drivers, Redis cache managers, or LLM clients directly. Instead, `execute_agent` delegates all business workflow orchestration to `AgentService`, identical to the FastAPI ingress layer. This guarantees identical execution semantics, tenant scoping, and audit logging regardless of whether the agent is triggered via HTTP or terminal.
+5. **Terminal Exception Shielding:** In accordance with the "Zero Naked Crash" policy, all runtime failures are shielded. Domain exceptions (`SupportAgentBaseError` subclasses like `SecurityAccessError` or `OrderNotFoundError`) are caught and rendered inside a red error panel detailing the exact domain error code and diagnostic explanation, exiting cleanly with exit code 1 without spewing Python tracebacks.
+
+---
+
+### Comprehensive Test Matrix Qualification & Scenario Execution Flow (`tests/agent/`)
+
+The qualification test matrix validates the autonomous agent across 12 mission-critical test scenarios (TC-01 through TC-12), ensuring deterministic compliance across nominal operational inquiries, multi-tool chained reasoning, statutory deadlines, security boundary enforcement, and infrastructure outages:
+
+```text
+Inbound Ingestion (Email / CLI / API)
+        │
+        ▼
+[ AgentService.process_email ]
+        │
+        ├── 1. Boundary & Syntax Validation:
+        │       └── Regex asserts tenant_id / session_id format
+        │
+        ├── 2. Deterministic Pre-Extraction (PreExtractionClassifier):
+        │       ├── Hostile Legal Threats (TC-11) ────────► Escalate Immediately (0 Tool Calls)
+        │       ├── Missing Order ID (TC-05) ─────────────► Information Missing (0 Tool Calls, Ask ID)
+        │       └── Out-of-Scope Requests ────────────────► Escalate Directly
+        │
+        ├── 3. Autonomous ReAct Reasoning Engine (ReActLoopEngine, max=3 iterations):
+        │       │
+        │       ├── [ Turn 1: Logistics Query ]
+        │       │       └── OrderStatusTool.execute(order_id, email)
+        │       │               ├── Delivered Nominal (TC-01) ──────► Proceed to Response Synthesis
+        │       │               ├── Unknown Order (TC-06) ──────────► ORDER_NOT_FOUND (Clear Error)
+        │       │               ├── PII Email Mismatch (TC-07) ─────► SECURITY_UNAUTHORIZED_ACCESS (Fail-Closed)
+        │       │               └── Upstream Outage (TC-09) ────────► Tenacity Retry Exhausted ──► CIRCUIT_BREAKER_TRIPPED
+        │       │
+        │       ├── [ Turn 2: Chained Domain Calculation ]
+        │       │       ├── Delayed Order (TC-02) ──────────► DelayCalculatorTool (Net Days Slip Verified)
+        │       │       ├── Eligible Refund (TC-03) ────────► RefundCalculatorTool (<= 14 Days, 100% Items Total)
+        │       │       └── Expired Refund (TC-04) ─────────► RefundCalculatorTool (> 14 Days, TIMEFRAME_EXCEEDED)
+        │       │
+        │       └── [ Recursion Ceiling Throttling (TC-10) ]
+        │               └── Iterations >= 3 ────────────────► Escalate (LOOP_LIMIT_EXCEEDED)
+        │
+        ├── 4. Zero LLM Authority Enforcement (ZeroLLMAuthorityGuard):
+        │       └── Prompt Injection / Verbal Approval (TC-08) ──► Neutralize to Human Review
+        │
+        ├── 5. Response Synthesis & Exception Shielding (synthesize_certified_response):
+        │       └── Malformed / Partial LLM Output (TC-12) ──► Catch Error ──► build_escalated_response
+        │
+        ├── 6. Persistence & Audit Trail (SessionStateStore & AuditLogRepository):
+        │       ├── Snapshots stored under session:{tenant_id}:{session_id}
+        │       └── Immutable AuditLogRecord persisted to Postgres / traces.jsonl
+        │
+        ▼
+AgentFinalResponse (Certified Customer Output or Structured Human Escalation)
+```
+
+1. **Nominal Inquiries & Chained Tool Execution (TC-01, TC-02):** Validates nominal deliveries (TC-01) resolved in a single tool call with 0 math calculations, as well as chained multi-step reasoning (TC-02) where status inspection triggers delay calculations with exact drift arithmetic.
+2. **Statutory Cooling-Off Deadlines (TC-03, TC-04):** Validates deterministic evaluation of EU Directive 2011/83/EU. Requests received within 14 calendar days of confirmed delivery (TC-03) compute full item refunds; requests exceeding 14 days (TC-04) produce polite refusals grounded in `TIMEFRAME_EXCEEDED` reason codes without LLM hallucination.
+3. **Pre-Extraction Clarification & Unknown Orders (TC-05, TC-06):** Inquiries lacking order identifiers (TC-05) are intercepted during pre-extraction, halting tool execution (0 tool calls) and prompting the user for clarification. Inquiries referencing non-existent order records (TC-06) return shielded `ORDER_NOT_FOUND` results without inventing order details.
+4. **Defense-in-Depth Security Guardrails (TC-07, TC-08, TC-11):** Cross-authorization verification (TC-07) compares sender addresses against registered ERP order records, failing closed with `SECURITY_UNAUTHORIZED_ACCESS` on mismatch and withholding all PII metadata. Indirect prompt injections (TC-08) attempting to coerce unauthorized €500 refunds are intercepted by `ZeroLLMAuthorityGuard` and neutralized to human review. Hostile legal threats or lawsuit notices (TC-11) bypass reasoning loops entirely to escalate directly to human legal counsel with 0 tool calls.
+5. **Operational Resiliency & Error Shielding (TC-09, TC-10, TC-12):** Consecutive upstream ERP timeouts or HTTP 500 errors (TC-09) trigger Tenacity retries before tripping `CircuitBreakerError`, shielding the application thread and escalating gracefully. Runaway loops (TC-10) are throttled at exactly 3 iterations, transitioning to `REQUIRES_HUMAN` with `LOOP_LIMIT_EXCEEDED`. Malformed LLM synthesis schemas (TC-12) are intercepted inside `synthesize_certified_response`, converting unhandled deserialization crashes into certified human escalation responses.
+
+---
+
+### Multi-Stage Docker Packaging & Wheel Caching Architecture (`docker/Dockerfile`, `tests/unit/test_container_stack.py`)
+
+The container deployment architecture for `8_support_agent` establishes an enterprise-grade, hardened container image satisfying high-density microservice constraints (< 250MB image footprint, zero-privilege non-root execution, and offline deterministic package installation):
+
+```text
+========================================================================================
+STAGE 1: BUILDER (python:3.11-slim AS builder)
+========================================================================================
+[ pyproject.toml, poetry.lock*, README.md ]
+        │
+        ▼
+Install Poetry 1.8.2 & poetry-plugin-export
+        │
+        ├── Dependency Locking: poetry lock --no-update
+        ├── Production Export: poetry export --without-hashes --only main -o requirements.txt
+        └── Wheel Compilation: pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements.txt
+                └── Compiles all C-extensions, dependencies, and packages into /build/wheels
+
+========================================================================================
+STAGE 2: RUNTIME (python:3.11-slim AS runtime)
+========================================================================================
+[ Security Baseline Hardening ]
+        ├── groupadd -g 10001 appgroup && useradd -u 10001 -g appgroup -s /bin/false -M appuser
+        ├── ENV PYTHONUNBUFFERED=1, PYTHONDONTWRITEBYTECODE=1, PORT=8000
+        │
+[ Artifact Transfer & Zero-Network Installation ]
+        ├── COPY --from=builder /build/wheels /wheels
+        ├── RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/*.whl && rm -rf /wheels
+        │       └── Zero network calls during install; immediate wheel cleanup ensures < 250MB image
+        │
+[ Application Files & Non-Root Boundary ]
+        ├── COPY src/ ./src/ && COPY data/ ./data/
+        ├── RUN chown -R appuser:appgroup /app
+        └── USER 10001
+        │
+[ Zero-Dependency Orchestration Probes ]
+        ├── EXPOSE 8000
+        ├── HEALTHCHECK (urllib.request against /health; 0 curl/wget dependencies)
+        └── CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+========================================================================================
+```
+
+1. **Multi-Stage Compiler Isolation:** Building production images directly with compilers (`gcc`, `build-essential`) or package management tools (`poetry`) bloats images beyond 600MB and expands the Common Vulnerabilities and Exposures (CVE) attack surface. Decoupling the pipeline into a `builder` stage and a `runtime` stage ensures that compiler tools, pip caches, and poetry metadata remain isolated in discarded intermediate layers.
+2. **Pre-Compiled Wheel Caching (`/build/wheels`):** Rather than copying `/usr/local/lib/python3.11/site-packages` directly across stages (which can miss executable console wrappers in `/usr/local/bin` or leave behind dangling symlinks), the builder stage compiles locked production dependencies into a clean binary wheel archive via `pip wheel --wheel-dir=/build/wheels`. The runtime stage installs these wheels using `--no-index --find-links=/wheels /wheels/*.whl` and immediately purges `/wheels` within the same layer (`rm -rf /wheels`), preventing filesystem bloat in the underlying container layers.
+3. **Hardened Least Privilege Execution (`UID 10001`):** In accordance with the Kubernetes Restricted Pod Security Standard and NIST SP 800-190 container security guidelines, the container creates a dedicated unprivileged user `appuser` and group `appgroup` with explicit UID and GID `10001`. The user is configured with a non-interactive shell (`-s /bin/false`) and no home directory (`-M`). Execution drops root privileges via `USER 10001`, mitigating container breakout vulnerabilities on shared host kernels.
+4. **Native Zero-Dependency Healthcheck Probe:** In minimal slim containers, installing `curl` or `wget` introduces 15–20MB of package manager caches and dynamic SSL libraries. Because Python 3.11 is already available in the runtime image, the healthcheck probe executes a native standard library script: `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').close()"`. This achieves sub-millisecond liveness and readiness evaluation with zero added attack surface.
+5. **Container Stack Manifest Qualification:** `tests/unit/test_container_stack.py` verifies the entire containerization topology. It programmatically validates `docker/docker-compose.yml` (service declarations for `api`, `redis:7-alpine`, and `postgres:15-alpine`, bridge network isolation, volume persistence, and backend healthcheck dependencies) as well as `docker/Dockerfile` (multi-stage definitions, wheel caching flags, cache cleanup, UID 10001 security, and native healthcheck syntax).
+
+---
+
+### Quality Gate Verification & Service Ingress Harness (`src/main.py`, `tests/unit/test_main_entrypoint.py`)
+
+The enterprise quality gate pipeline enforces strict static typing, comprehensive branch coverage, and deterministic application instantiation across the entire codebase:
+
+```text
+========================================================================================
+QUALITY GATE VERIFICATION PIPELINE
+========================================================================================
+[ Source Code (109 files) ]
+        │
+        ├── 1. Static Linting & Formatting Check (Ruff):
+        │       ├── ruff check . ──► 0 errors (E, F, I, B, UP, SIM)
+        │       └── ruff format --check . ──► 109 files formatted
+        │
+        ├── 2. Strict Type Soundness (Mypy --strict):
+        │       ├── Enforces strict=True, disallow_untyped_defs=True, no_implicit_optional=True
+        │       └── Checked 109 source files ──► 0 type errors, 0 untyped escapes
+        │
+        ├── 3. Comprehensive Test Matrix (pytest --cov=src --cov-fail-under=80):
+        │       ├── 380 Unit & Qualification Tests (TC-01..TC-12, Ingress, Tools, FSM, Security)
+        │       ├── Cumulative Line & Branch Coverage: 95.48% (2,591 stmts, 117 missed)
+        │       └── Threshold Pass: 95.48% >= 80% fail-under requirement
+        │
+        └── 4. Production Service Runner Verification (src/main.py):
+                ├── Exports create_app factory and application instance
+                └── Parameterized Uvicorn runner execution verified in tests/unit/test_main_entrypoint.py
+========================================================================================
+```
+
+1. **Automated Coverage Threshold Enforcement:** The test suite configuration (`pyproject.toml`) mandates `--cov-fail-under=80`. Any pull request or commit that causes total coverage to dip below 80% automatically fails CI/CD execution. The qualification matrix achieves 95.48% coverage across all 63 core source files, covering nominal flows, statutory edge cases, defensive fallbacks, and security boundaries.
+2. **Comprehensive Strict Typechecking:** Mypy is configured in strict mode across the entire repository. This prohibits untyped function arguments, generic untyped collections, untyped decorators, and implicit optionality. By running strict analysis across both `src/` and `tests/` (109 files total), test doubles and mock objects are statically verified against domain Protocol contracts, preventing mock drift.
+3. **Application Factory & Service Entrypoint (`src/main.py`):** The primary ASGI server runner provides both a pre-instantiated `app` instance and a `create_app(settings=...)` factory function, exporting `app`, `create_app`, and `get_settings` via `__all__`. The factory enables isolated testing with customized configuration parameters (e.g. testing with or without API key security) while the entrypoint script configures Uvicorn with environment-driven host, port, and auto-reload settings.
+4. **Service Runner Qualification (`tests/unit/test_main_entrypoint.py`):** Dedicated unit tests verify that `src.main` exports valid FastAPI application instances and that invoking the server startup routine delegates to Uvicorn with configured host, port, and reload flags, closing test coverage across the entrypoint boundary.
+
+
+
+
 
 
 

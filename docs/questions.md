@@ -561,9 +561,100 @@ The tracer maintains an internal span ID stack (`_span_stack`). When entering `t
 **Answer:**
 The tracer wraps all OpenTelemetry API interactions in shielded try-except blocks. If `opentelemetry.trace` is absent or the tracer provider fails, `_otel_tracer` degrades to `None`. During span execution, any OTel buffer overflow or attribute type failure is intercepted without interrupting the application thread. Regardless of external OTel health, `AgentTracer` reliably persists the immutable `TraceSpanRecord` locally and logs structured events via `structlog`.
 
+---
 
+### Q90: Why did we introduce `AgentService` rather than having route handlers in `routes.py` invoke `ReActLoopEngine` and `SessionStateStore` directly?
+**Answer:**
+Strict Clean Architecture and Pax Universal Engineering Guardrails forbid Presentation logic from directly performing data store queries, LLM invocations, or multi-turn reasoning loops. `AgentService` acts as an Application Service orchestrating pre-extraction, loop execution, session persistence, and audit trail generation. This keeps route handlers strictly focused on HTTP serialization, status codes, and dependency injection, while enabling code reuse for the CLI runner in Step 8.2.
 
+---
 
+### Q91: Why is a dual error-handling strategy (FastAPI exception handlers plus an ASGI `ErrorHandlingMiddleware`) implemented?
+**Answer:**
+FastAPI's `@app.exception_handler` operates within Starlette's routing pipeline, capturing exceptions from route handlers, Pydantic schema validation, and dependency providers. However, errors occurring within middleware or during request preparation can bypass these handlers. Adding an ASGI `ErrorHandlingMiddleware` provides a definitive outer boundary that catches any uncaught exception, logs it with `structlog`, and returns an RFC-compliant 500 JSON response without leaking stack traces or internal secrets.
 
+---
+
+### Q92: How does the REST Ingress prevent cross-tenant data leakage and key injection attacks on session retrieval?
+**Answer:**
+The ingress layer enforces boundary validation using strict regex patterns (`^[a-zA-Z0-9_\-]+$`) on `tenant_id` and `session_id` before performing store operations, neutralizing path traversal or delimiter injection attacks. Furthermore, `SessionStateStore` scopes keys under `session:{tenant_id}:{session_id}`. If an existing session belonging to Tenant A is queried with Tenant B's credentials, the lookup returns `None`, which maps to a 404 `SESSION_NOT_FOUND`, guaranteeing strict tenant data isolation.
+
+---
+
+### Q93: How does the Rich CLI runner enforce Clean Architecture layer isolation while inspecting ERP order data and executing autonomous agent reasoning loops?
+**Answer:**
+The CLI runner acts strictly as a Presentation layer client. For order inspection (`check-order`), it interacts with `MockERPClient` through domain interfaces. For agent execution (`run`, `interactive`), it delegates entirely to `AgentService` (`execute_agent`), passing a validated `InboundEmailMessage` DTO and receiving immutable `AgentFinalResponse` and `AgentSessionSnapshot` objects. The CLI never makes direct queries to Redis, PostgreSQL, or LLM APIs.
+
+---
+
+### Q94: Why were terminal rendering mechanics separated into `cli_display.py` instead of embedding them within `cli.py`?
+**Answer:**
+Pax Universal Engineering Guardrails enforce a strict 250 LOC limit per file and single responsibility design. Combining Typer command arguments, interactive prompts, file ingestion parsing, and Rich UI tables/panels in a single file exceeded 260 lines. Extracting display logic (`render_output`, `render_traces`, `render_order_details`) into `cli_display.py` separates visual formatting from CLI routing, keeping both modules modular and maintainable (~180 LOC and ~120 LOC).
+
+---
+
+### Q95: How does the CLI runner handle invalid email inputs and upstream agent faults without violating the 'Zero Naked Crash' principle?
+**Answer:**
+The CLI wraps file ingestion in boundary checks, attempting Pydantic model validation on JSON inputs and falling back to header parsing on plain text. If an email file is missing or invalid, it prints a formatted red error panel and exits with `typer.Exit(code=1)`. During execution, all domain exceptions (`SupportAgentBaseError` derivatives like `SecurityAccessError` or `OrderNotFoundError`) are caught, formatted in an error panel with error code and description, and terminated gracefully without leaking raw Python tracebacks.
+
+---
+
+### Q96: How does the qualification test matrix in `test_scenarios.py` validate Clean Architecture layer compliance without invoking real external LLM or database endpoints?
+**Answer:**
+The qualification suite wires `AgentService` with an in-memory `SessionStateStore`, file-fallback `AuditLogRepository`, fixture-backed `MockERPClient`, and a mocked `LLMClientProtocol`. This executes the real application orchestrator, pre-extraction classifier, FSM controller, ReAct loop engine, and authority guards against deterministic mock responses, verifying end-to-end domain contracts without external network or LLM API dependencies.
+
+---
+
+### Q97: How does `synthesize_certified_response` uphold the 'Zero Naked Crash' principle during schema deserialization failures (TC-12)?
+**Answer:**
+When `llm_client.generate_structured` fails due to malformed JSON or schema validation errors (`LLMResponseValidationError`), `synthesize_certified_response` catches the exception, logs the diagnostic event, and routes through `build_escalated_response`. This converts what would have been an unhandled fatal crash into a certified `AgentFinalResponse` marked with `REQUIRES_HUMAN_REVIEW`, preserving system uptime and session auditability.
+
+---
+
+### Q98: Why was the qualification suite partitioned into `scenario_helpers.py`, `scenarios_nominal.py`, and `scenarios_resilience.py`?
+**Answer:**
+To strictly comply with Pax Universal Engineering Guardrails enforcing a 250 LOC hard limit per file. Placing 12 comprehensive async test cases, fixtures, and mock builders in a single file exceeded 420 LOC. Splitting into shared helpers, nominal cases (TC-01..TC-06, ~220 LOC), and resilience cases (TC-07..TC-12, ~160 LOC) while aggregating in `test_scenarios.py` (~36 LOC) preserves single-responsibility modularity and readability while maintaining seamless test discovery.
+
+---
+
+### Q99: Why is compiling wheels into `/build/wheels` preferred over copying `/usr/local/lib/python3.11/site-packages` directly across multi-stage container builds?
+**Answer:**
+Directly copying `site-packages` between stages can miss executable console scripts in `/usr/local/bin`, create symlink discrepancies, or inadvertently transfer unnecessary build artifacts. Compiling wheels into a dedicated directory and executing `pip install --no-index --find-links=/wheels` allows pip to install packages natively into the runtime environment, generate proper executable wrappers, and allows the wheel archive to be purged immediately in the same layer (`rm -rf /wheels`), preventing dead layer weight.
+
+---
+
+### Q100: How does the production Dockerfile ensure a final image footprint under 250MB?
+**Answer:**
+The image starts from `python:3.11-slim` (~130MB base), excludes compiler utilities (`gcc`, `make`, `build-essential`) and build tools (`Poetry`) from the runtime stage, installs only production dependencies, and removes the `/wheels` directory in the same `RUN` layer as installation (`pip install ... && rm -rf /wheels`). Combined with Python bytecode suppression (`PYTHONDONTWRITEBYTECODE=1`), the final image footprint stays comfortably around 200MB.
+
+---
+
+### Q101: Why is a native Python `urllib` healthcheck superior to `curl` or `wget` in slim container runtimes?
+**Answer:**
+Installing `curl` via `apt-get` adds 15–20MB of binaries, libraries (`libcurl`, `libssl`), and package cache overhead, expanding both the image footprint and CVE attack surface. Because the container already runs Python, executing a single-line urllib probe `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').close()"` adds zero megabytes and zero extra packages.
+
+---
+
+### Q102: How does non-root UID 10001 protect host environments against container breakout vulnerabilities?
+**Answer:**
+Containers share the underlying host Linux kernel. If a process running as root (`UID 0`) in a container breaks out through a kernel vulnerability, misconfigured volume mount, or insecure socket, it possesses root privileges on the host system. By forcing the runtime to execute as `UID 10001` without a login shell (`/bin/false`) and restricting file ownership, potential exploits are constrained to an unprivileged namespace, complying with the Kubernetes Restricted Pod Security Standard.
+
+---
+
+### Q103: Why is enforcing `--cov-fail-under=80` in automated test pipelines superior to relying on code reviews alone?
+**Answer:**
+Human code reviews frequently overlook untested edge cases, error handlers, and defensive fallback branches. Automated coverage gates deterministically reject pull requests that decrease coverage below the threshold, ensuring that critical resilience mechanisms (such as circuit breaker fallbacks, PII access denial branches, and schema validation error shields) are backed by automated tests before reaching production.
+
+---
+
+### Q104: Why should `mypy --strict` be executed across both `src/` and `tests/` rather than `src/` alone?
+**Answer:**
+If test code is exempt from strict typing, mocks, test doubles, and fixture return types can drift from production protocols without detection. Typing tests strictly ensures that mock implementations (such as `MockERPClient` or `LLMClientProtocol` doubles) adhere faithfully to domain contracts, preventing false-positive test passes caused by mismatched mock signatures.
+
+---
+
+### Q105: How does the Application Factory pattern (`create_app`) support test isolation in multi-tenant environments?
+**Answer:**
+In multi-tenant architectures, different tests may require contrasting configurations (e.g. testing with API key authentication enabled vs disabled, or pointing to an isolated test database). The application factory allows each test suite or test client to instantiate an isolated application context with tailored `Settings` and dependency overrides, preventing state leakage across test cases.
 
 

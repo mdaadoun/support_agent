@@ -1,20 +1,27 @@
 # Multi-stage non-root Dockerfile (< 250MB, UID 10001)
-# Stage 1: Build & dependency resolution stage
+# Stage 1: Build & dependency resolution stage with optimized wheel caching
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Install poetry build tool
-RUN pip install --no-cache-dir poetry==1.8.2
+# Configure environment for deterministic dependency compilation
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install poetry build tool and export plugin
+RUN pip install --no-cache-dir poetry==1.8.2 poetry-plugin-export
 
 # Copy dependency specifications
-COPY pyproject.toml README.md ./
+COPY pyproject.toml poetry.lock* README.md ./
 
-# Install only production dependencies into system site-packages
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi --no-root --only main
+# Export locked production dependencies and compile wheels into /build/wheels
+RUN if [ ! -f poetry.lock ]; then poetry lock --no-update 2>/dev/null || poetry lock; fi \
+    && poetry export -f requirements.txt --output requirements.txt --without-hashes --only main \
+    && pip wheel --no-cache-dir --wheel-dir=/build/wheels -r requirements.txt
 
-# Stage 2: Minimal non-root production runtime stage
+# Stage 2: Minimal non-root production runtime stage (< 250MB)
 FROM python:3.11-slim AS runtime
 
 # Security hardening: Create dedicated non-root user and group with UID/GID 10001
@@ -30,9 +37,12 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=8000 \
     HOST=0.0.0.0
 
-# Copy installed Python packages and binaries from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Copy pre-compiled binary wheels from builder stage
+COPY --from=builder /build/wheels /wheels
+
+# Install production wheels in runtime environment and purge wheel cache
+RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/*.whl \
+    && rm -rf /wheels
 
 # Copy application source code and seed data
 COPY src/ ./src/
@@ -46,7 +56,7 @@ USER 10001
 
 EXPOSE 8000
 
-# Healthcheck configuration
+# Healthcheck configuration using native Python urllib
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').close()" || exit 1
 

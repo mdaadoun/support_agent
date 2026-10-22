@@ -1,0 +1,4 @@
+From: bob@example.com
+Subject: Delay inquiry CMD-10002
+
+Hello, my express package CMD-10002 has not arrived yet. Please let me know what happened.

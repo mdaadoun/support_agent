@@ -521,10 +521,78 @@ A structured JSON telemetry schema containing root session metadata, user/tenant
 ### Active Span Context
 A mutable runtime handle yielded by tracer context managers allowing caller code to incrementally attach inputs, outputs, tokens, and error states before final immutable snapshotting.
 
+---
 
+## 🌐 22. REST Ingress & HTTP Security
 
+### REST Ingress
+The HTTP presentation boundary that validates inbound customer support requests, checks authentication, and routes requests to application services.
 
+### API Key Shielding
+An authentication guard that validates cryptographic or shared secret headers before admitting traffic to domain execution loops.
 
+### Tenant Boundary Isolation
+Enforcement of tenant-scoped partitions across API endpoints and storage keys (`session:{tenant_id}:{session_id}`) to prevent cross-tenant data leakage.
 
+### Exception Shielding Middleware
+An ASGI middleware layer that intercepts uncaught exceptions, logs structured JSON diagnostics, and returns standardized error payloads.
+
+---
+
+## 🖥️ 23. Terminal Interface & CLI UX
+
+### Rich CLI Runner
+A terminal presentation entrypoint using Typer for command parsing and Rich for colored panels, progress spinners, and formatted tabular inspection.
+
+### Trace Table Rendering
+Visualizing multi-turn ReAct decision-action-observation cycles as structured terminal tables with argument payloads, duration, and execution outcomes.
+
+### Multi-Format Inbound Ingestion
+Ingesting customer support inquiries interchangeably from JSON payloads, plain text email files, or interactive CLI prompts.
+
+---
+
+## 🧪 24. Test Matrix Qualification & Robustness
+
+### Comprehensive Test Matrix Qualification
+A rigorous verification suite evaluating an autonomous AI agent across nominal domain requests, chained tool dependencies, statutory edge cases, adversarial prompt injections, and upstream infrastructure failures.
+
+### Zero Authority Response Neutralization
+An automatic safety mechanism that intercepts uncertified or ungrounded financial claims produced by an LLM and replaces them with a sanitized human escalation message without leaking hallucinatory commitments.
+
+### Circuit Breaker Tripping
+The operational transition where repeated transient upstream infrastructure outages exhaust retry budgets and transition the active agent session to human review without crashing the application thread.
+
+---
+
+## 🐳 25. Containerization & Production Packaging
+
+### Multi-Stage Docker Build
+A Dockerfile design pattern featuring multiple `FROM` instructions, allowing build-time compilers and dependency managers to be segregated from the final production runtime image to minimize attack surface.
+
+### Wheel Caching
+The compilation and staging of pre-built binary Python distribution archives (`.whl`) in a temporary build layer, enabling rapid, reproducible, offline package installations in subsequent image stages.
+
+### UID 10001 Security Boundary
+The container hardening standard of assigning unprivileged process execution to an explicit user and group identifier (`UID/GID 10001`), ensuring containerized workloads do not map to root (`UID 0`) on the host kernel.
+
+### Zero-Dependency Healthcheck
+A container health probe implementation that uses the existing runtime environment (such as Python standard library `urllib.request`) rather than installing dedicated external CLI utilities like `curl` or `wget`.
+
+---
+
+## 🎯 26. Quality Assurance & Code Governance
+
+### Quality Gate
+An automated software verification checkpoint enforcing static analysis, test coverage thresholds, and type soundness before code artifacts can be merged or deployed.
+
+### Coverage Fail-Under
+A test runner configuration directive that causes the test suite execution to fail with a non-zero exit code if cumulative code coverage falls below a specified percentage (e.g. 80%).
+
+### Strict Type Soundness
+A compilation or static analysis state where all function signatures, variable assignments, and generic parameters are explicitly typed and validated, prohibiting dynamic typing escapes like `Any`.
+
+### Application Factory Pattern
+An architectural pattern where web framework applications (e.g. FastAPI) are constructed via a dedicated callable function (`create_app`), enabling customized dependency injection during testing.
 
 

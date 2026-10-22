@@ -127,3 +127,37 @@ def test_dockerfile_multi_stage_and_security_hardening() -> None:
     assert "HEALTHCHECK" in content
     assert "/health" in content
     assert "uvicorn" in content
+
+
+def test_dockerfile_optimized_wheel_caching() -> None:
+    """Validate Step 8.4 wheel caching compilation and runtime layer minimization."""
+    content = DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+    # Builder stage creates pre-compiled wheels in isolated directory
+    assert "--wheel-dir=/build/wheels" in content
+    assert "pip wheel" in content
+    assert "poetry-plugin-export" in content
+
+    # Runtime stage copies wheel cache and installs without network index
+    assert "COPY --from=builder /build/wheels /wheels" in content
+    assert "--no-index" in content
+    assert "--find-links=/wheels" in content
+    assert "/wheels/*.whl" in content
+
+    # Runtime cleans up wheels to maintain < 250MB image footprint
+    assert "rm -rf /wheels" in content
+
+
+def test_dockerfile_runtime_environment_and_healthcheck() -> None:
+    """Validate container runtime flags, healthcheck, and unbuffered I/O."""
+    content = DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+    # Unbuffered python execution and bytecode suppression
+    assert "PYTHONUNBUFFERED=1" in content
+    assert "PYTHONDONTWRITEBYTECODE=1" in content
+
+    # Native urllib healthcheck without external curl/wget bloat
+    assert "urllib.request" in content
+    assert "http://localhost:8000/health" in content
+    assert "--interval=30s" in content
+    assert "--timeout=5s" in content

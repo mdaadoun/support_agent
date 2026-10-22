@@ -1,0 +1,7 @@
+{
+  "message_id": "MSG-FIXTURE-001",
+  "sender_email": "alice@example.com",
+  "subject": "Where is my order CMD-10001?",
+  "body_text": "Hello, I placed order CMD-10001 last week and would like an update on its delivery status. Thank you!",
+  "received_at": "2026-08-25T10:00:00Z"
+}

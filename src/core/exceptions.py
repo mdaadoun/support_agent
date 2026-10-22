@@ -1,6 +1,7 @@
 """Standardized domain exceptions and error taxonomy for 8_support_agent."""
 
 __all__ = [
+    "APIAuthenticationError",
     "AppBaseError",
     "BusinessRuleViolationError",
     "CacheError",
@@ -47,6 +48,13 @@ class SecurityAccessError(SupportAgentBaseError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, error_code="SECURITY_UNAUTHORIZED_ACCESS")
+
+
+class APIAuthenticationError(SupportAgentBaseError):
+    """Raised when REST API authentication fails or API key is invalid."""
+
+    def __init__(self, message: str = "Invalid or missing API key.") -> None:
+        super().__init__(message, error_code="API_AUTHENTICATION_ERROR")
 
 
 class ToolExecutionError(SupportAgentBaseError):

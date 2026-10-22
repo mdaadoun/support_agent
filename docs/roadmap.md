@@ -188,12 +188,12 @@ Agent loop successfully runs multi-turn tool calling, halts at 3 iterations, and
 **Dependencies:** All previous phases.  
 **Deliverables:** FastAPI REST API, Rich CLI runner, full qualification suite (TC-01 to TC-12), production Docker container.
 
-- [ ] **Step 8.1: FastAPI REST Ingress:**
+- [x] **Step 8.1: FastAPI REST Ingress:**
   - Implement `POST /agent/process`, `GET /health`, and `GET /agent/sessions/{session_id}` in `src/api/routes.py`.
   - Add API key authentication, CORS, error handling middleware, and dependency injection in `src/api/app.py`.
-- [ ] **Step 8.2: Rich Terminal CLI Runner:**
+- [x] **Step 8.2: Rich Terminal CLI Runner:**
   - Implement `src/cli.py` using Typer and Rich to process email files or interactive queries with formatted trace tables.
-- [ ] **Step 8.3: Comprehensive Test Matrix Qualification (TC-01 to TC-12):**
+- [x] **Step 8.3: Comprehensive Test Matrix Qualification (TC-01 to TC-12):**
   - Implement `tests/agent/test_scenarios.py` validating all 12 core test scenarios:
     - `TC-01`: Nominal delivered order query (1 tool call).
     - `TC-02`: Chained delivery delay slip computation.
@@ -207,9 +207,9 @@ Agent loop successfully runs multi-turn tool calling, halts at 3 iterations, and
     - `TC-10`: Loop limit exceeded (3 iterations) graceful termination.
     - `TC-11`: Out-of-scope / hostile legal threat escalation.
     - `TC-12`: Schema deserialization validation failure handling.
-- [ ] **Step 8.4: Multi-Stage Production Dockerfile:**
+- [x] **Step 8.4: Multi-Stage Production Dockerfile:**
   - Create multi-stage `Dockerfile` with non-root user (`UID 10001`), optimized wheel caching, and final image size `< 250MB`.
-- [ ] **Step 8.5: Quality Gate Verification & Documentation:**
+- [x] **Step 8.5: Quality Gate Verification & Documentation:**
   - Verify `mypy --strict` passes across all files.
   - Verify test suite passes with `pytest --cov=src --cov-fail-under=80`.
   - Produce operational `README.md` with usage instructions.

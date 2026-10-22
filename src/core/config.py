@@ -39,6 +39,10 @@ class Settings(BaseSettings):
         le=65535,
         description="FastAPI ASGI server listening port",
     )
+    api_key: str = Field(
+        default="",
+        description="Secret API key required for REST API authentication (header X-API-Key)",
+    )
 
     # Multi-Tenancy Isolation
     default_tenant_id: str = Field(

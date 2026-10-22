@@ -63,11 +63,26 @@ async def synthesize_certified_response(
     system_prompt = PromptManager.get_response_system_prompt()
     final_prompt = PromptManager.build_final_response_prompt(session)
 
-    synthesis: ResponseSynthesisOutput = await llm_client.generate_structured(
-        system_prompt=system_prompt,
-        user_prompt=final_prompt,
-        response_schema=ResponseSynthesisOutput,
-    )
+    try:
+        synthesis: ResponseSynthesisOutput = await llm_client.generate_structured(
+            system_prompt=system_prompt,
+            user_prompt=final_prompt,
+            response_schema=ResponseSynthesisOutput,
+        )
+    except Exception as exc:
+        return build_escalated_response(
+            session=session,
+            reason=f"Synthesis output validation failure: {exc}",
+            intent=(
+                session.extracted_demand.intent
+                if session.extracted_demand
+                else IntentEnum.ORDER_STATUS
+            ),
+            start_time=start_time,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+        )
 
     is_low_confidence = synthesis.confidence_score < confidence_threshold
     human_escalation_reason: str | None
